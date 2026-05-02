@@ -3,15 +3,18 @@
 const db = require('../config/db');
 
 const MAX_SUBJECTS_SS23 = 9;
+const SS_INDIVIDUAL_CLASSES = ['SS 2', 'SS 3'];
 
-/* ── SHARED HELPERS ──────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════════
+   SHARED HELPERS
+══════════════════════════════════════════════════════════════════════════════ */
 function gradeOf(total) {
-  if (total >= 70) return { letter: 'A', remark: 'Excellent' };
-  if (total >= 60) return { letter: 'B', remark: 'Very Good' };
-  if (total >= 50) return { letter: 'C', remark: 'Good'      };
-  if (total >= 45) return { letter: 'D', remark: 'Pass'      };
-  if (total >= 40) return { letter: 'E', remark: 'Weak Pass' };
-  return                   { letter: 'F', remark: 'Fail'     };
+  if (total >= 70) return { letter: 'A', remark: 'Excellent'  };
+  if (total >= 60) return { letter: 'B', remark: 'Very Good'  };
+  if (total >= 50) return { letter: 'C', remark: 'Good'       };
+  if (total >= 45) return { letter: 'D', remark: 'Pass'       };
+  if (total >= 40) return { letter: 'E', remark: 'Weak Pass'  };
+  return               { letter: 'F', remark: 'Fail'       };
 }
 
 function canEditClass(user, cls, arm) {
@@ -26,14 +29,14 @@ function validateScores(ca, exam) {
   const examNum = Number(exam);
   if (isNaN(caNum)   || caNum   < 0 || caNum   > 40) return 'CA score must be between 0 and 40.';
   if (isNaN(examNum) || examNum < 0 || examNum > 60) return 'Exam score must be between 0 and 60.';
-  return null; // valid
+  return null;
 }
 
 function checkSubjectLimit(studentId, subject, term, session) {
   const student = db.findStudent(studentId);
-  if (!student || !['SS 2', 'SS 3'].includes(student.class)) return null;
+  if (!student || !SS_INDIVIDUAL_CLASSES.includes(student.class)) return null;
   const alreadyHas = !!db.findResult(studentId, subject, term, session);
-  if (alreadyHas) return null; // updating existing — no limit issue
+  if (alreadyHas) return null; // updating — no limit issue
   const count = db.countSubjectsForStudent(studentId, term, session);
   if (count >= MAX_SUBJECTS_SS23) {
     return `Student ${studentId} has already registered ${MAX_SUBJECTS_SS23} subjects for ${term} ${session} (SS2/SS3 maximum).`;
@@ -45,21 +48,28 @@ function enrichResult(r) {
   return { ...r, ...gradeOf(r.total) };
 }
 
-/* ── GET /api/results ───────────────────────
+/* Ensure db.subjectAllocations exists */
+function allocStore() {
+  if (!db.subjectAllocations) db.subjectAllocations = {};
+  return db.subjectAllocations;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   GET /api/results
    Query: studentId, class, arm, subject, term, session
-─────────────────────────────────────────── */
+══════════════════════════════════════════════════════════════════════════════ */
 exports.getAll = (req, res) => {
   const { studentId, class: cls, arm, subject, term, session } = req.query;
 
   // Parent: own ward only
   if (req.user.role === 'Parent') {
-    const data = db.results
+    const data = (db.results || [])
       .filter(r => r.studentId === req.user.wardId)
       .map(enrichResult);
     return res.json({ success: true, data, total: data.length });
   }
 
-  let list = [...db.results];
+  let list = [...(db.results || [])];
 
   // Teacher: restricted to assigned class/arm
   if (req.user.role === 'Teacher') {
@@ -69,7 +79,6 @@ exports.getAll = (req, res) => {
     );
   }
 
-  // Apply optional filters
   if (studentId) list = list.filter(r => r.studentId === studentId);
   if (cls)       list = list.filter(r => r.class     === cls);
   if (arm)       list = list.filter(r => r.arm       === arm);
@@ -77,33 +86,49 @@ exports.getAll = (req, res) => {
   if (term)      list = list.filter(r => r.term      === term);
   if (session)   list = list.filter(r => r.session   === session);
 
-  return res.json({
-    success: true,
-    data:    list.map(enrichResult),
-    total:   list.length,
-  });
+  return res.json({ success: true, data: list.map(enrichResult), total: list.length });
 };
 
-/* ── GET /api/results/report-card/:studentId */
+/* ══════════════════════════════════════════════════════════════════════════════
+   GET /api/results/:id
+══════════════════════════════════════════════════════════════════════════════ */
+exports.getOne = (req, res) => {
+  const id  = Number(req.params.id);
+  const result = (db.results || []).find(r => r.id === id);
+  if (!result)
+    return res.status(404).json({ success: false, message: 'Result not found.' });
+
+  // Parent can only view their ward's result
+  if (req.user.role === 'Parent' && result.studentId !== req.user.wardId)
+    return res.status(403).json({ success: false, message: 'Access denied.' });
+
+  // Teacher can only view results for their class/arm
+  if (req.user.role === 'Teacher' && !canEditClass(req.user, result.class, result.arm))
+    return res.status(403).json({ success: false, message: 'Access denied.' });
+
+  return res.json({ success: true, data: enrichResult(result) });
+};
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   GET /api/results/report-card/:studentId
+   Query: term, session
+══════════════════════════════════════════════════════════════════════════════ */
 exports.getReportCard = (req, res) => {
   const { studentId } = req.params;
   const { term, session } = req.query;
 
-  // Parent can only view their own ward's card
-  if (req.user.role === 'Parent' && req.user.wardId !== studentId) {
+  if (req.user.role === 'Parent' && req.user.wardId !== studentId)
     return res.status(403).json({ success: false, message: 'Access denied.' });
-  }
 
   const student = db.findStudent(studentId);
-  if (!student) {
+  if (!student)
     return res.status(404).json({ success: false, message: `Student "${studentId}" not found.` });
-  }
 
-  let rows = db.results.filter(r => r.studentId === studentId);
+  let rows = (db.results || []).filter(r => r.studentId === studentId);
   if (term)    rows = rows.filter(r => r.term    === term);
   if (session) rows = rows.filter(r => r.session === session);
 
-  const enriched  = rows.map(enrichResult);
+  const enriched   = rows.map(enrichResult);
   const totalScore = enriched.reduce((sum, r) => sum + r.total, 0);
   const average    = enriched.length ? parseFloat((totalScore / enriched.length).toFixed(1)) : null;
 
@@ -115,204 +140,57 @@ exports.getReportCard = (req, res) => {
       session: session || 'All',
       results: enriched,
       summary: {
-        subjectCount: enriched.length,
+        subjectCount:  enriched.length,
         totalScore,
         average,
-        overallGrade: average != null ? gradeOf(average).letter : null,
+        overallGrade:  average != null ? gradeOf(average).letter : null,
         overallRemark: average != null ? gradeOf(average).remark : null,
       },
     },
   });
 };
 
-/* ── POST /api/results ── single entry ──────
-   Body: { studentId, class, arm, subject, term, session, ca, exam }
-─────────────────────────────────────────── */
-exports.create = (req, res) => {
-  const { studentId, class: cls, arm, subject, term, session, ca, exam } = req.body;
-
-  // Required-fields check
-  const missing = ['studentId', 'class', 'arm', 'subject', 'term', 'session', 'ca', 'exam']
-    .filter(f => req.body[f] === undefined || req.body[f] === '');
-  if (missing.length) {
-    return res.status(400).json({ success: false, message: `Missing required fields: ${missing.join(', ')}.` });
-  }
-
-  // Permission
-  if (!canEditClass(req.user, cls, arm)) {
-    return res.status(403).json({ success: false, message: 'You can only enter results for your assigned class.' });
-  }
-
-  // Student exists?
-  if (!db.findStudent(studentId)) {
-    return res.status(404).json({ success: false, message: `Student "${studentId}" not found.` });
-  }
-
-  // Score range
-  const scoreError = validateScores(ca, exam);
-  if (scoreError) return res.status(400).json({ success: false, message: scoreError });
-
-  // SS2/SS3 subject limit
-  const limitError = checkSubjectLimit(studentId, subject, term, session);
-  if (limitError) return res.status(400).json({ success: false, message: limitError });
-
-  const caNum  = Number(ca);
-  const exNum  = Number(exam);
-  const total  = Math.min(caNum + exNum, 100);
-  const saved  = db.upsertResult({ studentId, class: cls, arm, subject, term, session, ca: caNum, exam: exNum, total });
-
-  return res.status(201).json({ success: true, data: enrichResult(saved) });
-};
-
-/* ── POST /api/results/bulk ─────────────────
-   Body: { class, arm, term, session,
-           rows: [{ studentId, subject, ca, exam }] }
-─────────────────────────────────────────── */
-exports.bulkCreate = (req, res) => {
-  const { class: cls, arm, term, session, rows } = req.body;
-
-  if (!cls || !arm || !term || !session) {
-    return res.status(400).json({ success: false, message: 'class, arm, term, and session are required.' });
-  }
-  if (!Array.isArray(rows) || rows.length === 0) {
-    return res.status(400).json({ success: false, message: 'rows[] must be a non-empty array.' });
-  }
-
-  if (!canEditClass(req.user, cls, arm)) {
-    return res.status(403).json({ success: false, message: 'You can only enter results for your assigned class.' });
-  }
-
-  const saved  = [];
-  const errors = [];
-
-  rows.forEach((row, i) => {
-    const label = `Row ${i + 1}`;
-    const { studentId, subject, ca, exam } = row;
-
-    // Basic presence
-    const missing = ['studentId', 'subject', 'ca', 'exam'].filter(f => row[f] === undefined || row[f] === '');
-    if (missing.length) {
-      errors.push({ row: label, reason: `Missing: ${missing.join(', ')}.` });
-      return;
-    }
-
-    // Student exists?
-    if (!db.findStudent(studentId)) {
-      errors.push({ row: label, reason: `Student "${studentId}" not found.` });
-      return;
-    }
-
-    // Score ranges
-    const scoreError = validateScores(ca, exam);
-    if (scoreError) { errors.push({ row: label, reason: scoreError }); return; }
-
-    // Subject limit
-    const limitError = checkSubjectLimit(studentId, subject, term, session);
-    if (limitError)  { errors.push({ row: label, reason: limitError }); return; }
-
-    const caNum = Number(ca);
-    const exNum = Number(exam);
-    const total = Math.min(caNum + exNum, 100);
-    const entry = db.upsertResult({ studentId, class: cls, arm, subject, term, session, ca: caNum, exam: exNum, total });
-    saved.push(enrichResult(entry));
-  });
-
-  // 207 Multi-Status when partial success; 400 when nothing saved
-  const status = saved.length === 0 ? 400 : 207;
-  return res.status(status).json({
-    success:   saved.length > 0,
-    saved:     saved.length,
-    errors:    errors.length,
-    data:      saved,
-    issues:    errors,
-  });
-};
-
-/* ── PUT /api/results/:id ────────────────────
-   Allows patching ca/exam scores on an existing result.
-─────────────────────────────────────────── */
-exports.update = (req, res) => {
-  const id  = Number(req.params.id);
-  const idx = db.results.findIndex(r => r.id === id);
-  if (idx < 0) {
-    return res.status(404).json({ success: false, message: 'Result not found.' });
-  }
-
-  const existing = db.results[idx];
-
-  if (!canEditClass(req.user, existing.class, existing.arm)) {
-    return res.status(403).json({ success: false, message: 'You can only edit results for your assigned class.' });
-  }
-
-  const ca   = req.body.ca   !== undefined ? req.body.ca   : existing.ca;
-  const exam = req.body.exam !== undefined ? req.body.exam : existing.exam;
-
-  const scoreError = validateScores(ca, exam);
-  if (scoreError) return res.status(400).json({ success: false, message: scoreError });
-
-  const caNum  = Number(ca);
-  const exNum  = Number(exam);
-  const total  = Math.min(caNum + exNum, 100);
-
-  db.results[idx] = { ...existing, ca: caNum, exam: exNum, total };
-  return res.json({ success: true, data: enrichResult(db.results[idx]) });
-};
-
-/* ── DELETE /api/results/:id ─── Admin only── */
-exports.remove = (req, res) => {
-  const id  = Number(req.params.id);
-  const idx = db.results.findIndex(r => r.id === id);
-  if (idx < 0) {
-    return res.status(404).json({ success: false, message: 'Result not found.' });
-  }
-
-  const [removed] = db.results.splice(idx, 1);
-  return res.json({ success: true, message: 'Result deleted.', data: removed });
-};
-
-/* ── GET /api/results/stats ─────────────────
-   Aggregate stats for a class/term/session.
+/* ══════════════════════════════════════════════════════════════════════════════
+   GET /api/results/stats
    Query: class, arm, term, session
-─────────────────────────────────────────── */
+══════════════════════════════════════════════════════════════════════════════ */
 exports.getStats = (req, res) => {
   const { class: cls, arm, term, session } = req.query;
 
-  if (req.user.role === 'Teacher' && !canEditClass(req.user, cls, arm)) {
+  if (req.user.role === 'Teacher' && !canEditClass(req.user, cls, arm))
     return res.status(403).json({ success: false, message: 'Access denied.' });
-  }
 
-  let list = [...db.results];
+  let list = [...(db.results || [])];
   if (cls)     list = list.filter(r => r.class   === cls);
   if (arm)     list = list.filter(r => r.arm     === arm);
   if (term)    list = list.filter(r => r.term    === term);
   if (session) list = list.filter(r => r.session === session);
 
-  if (!list.length) {
+  if (!list.length)
     return res.json({ success: true, data: null, message: 'No results found for the given filters.' });
-  }
 
-  const totals    = list.map(r => r.total);
-  const avg       = totals.reduce((a, b) => a + b, 0) / totals.length;
-  const passing   = list.filter(r => r.total >= 40).length;
-  const failing   = list.length - passing;
+  const totals  = list.map(r => r.total);
+  const avg     = totals.reduce((a, b) => a + b, 0) / totals.length;
+  const passing = list.filter(r => r.total >= 40).length;
+  const failing = list.length - passing;
 
-  // Grade distribution
   const gradeDist = { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0 };
   list.forEach(r => { gradeDist[gradeOf(r.total).letter]++; });
 
-  // Per-subject averages
   const bySubject = {};
   list.forEach(r => {
     if (!bySubject[r.subject]) bySubject[r.subject] = [];
     bySubject[r.subject].push(r.total);
   });
-  const subjectAverages = Object.entries(bySubject).map(([subject, scores]) => ({
-    subject,
-    average:  parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)),
-    count:    scores.length,
-    highest:  Math.max(...scores),
-    lowest:   Math.min(...scores),
-  })).sort((a, b) => b.average - a.average);
+  const subjectAverages = Object.entries(bySubject)
+    .map(([subject, scores]) => ({
+      subject,
+      average: parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)),
+      count:   scores.length,
+      highest: Math.max(...scores),
+      lowest:  Math.min(...scores),
+    }))
+    .sort((a, b) => b.average - a.average);
 
   return res.json({
     success: true,
@@ -328,5 +206,281 @@ exports.getStats = (req, res) => {
       gradeDist,
       subjectAverages,
     },
+  });
+};
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   POST /api/results  —  single entry
+   Body: { studentId, class, arm, subject, term, session, ca, exam }
+══════════════════════════════════════════════════════════════════════════════ */
+exports.create = (req, res) => {
+  const { studentId, class: cls, arm, subject, term, session, ca, exam } = req.body;
+
+  const missing = ['studentId', 'class', 'arm', 'subject', 'term', 'session', 'ca', 'exam']
+    .filter(f => req.body[f] === undefined || req.body[f] === '');
+  if (missing.length)
+    return res.status(400).json({ success: false, message: `Missing required fields: ${missing.join(', ')}.` });
+
+  if (!canEditClass(req.user, cls, arm))
+    return res.status(403).json({ success: false, message: 'You can only enter results for your assigned class.' });
+
+  if (!db.findStudent(studentId))
+    return res.status(404).json({ success: false, message: `Student "${studentId}" not found.` });
+
+  const scoreError = validateScores(ca, exam);
+  if (scoreError) return res.status(400).json({ success: false, message: scoreError });
+
+  const limitError = checkSubjectLimit(studentId, subject, term, session);
+  if (limitError)  return res.status(400).json({ success: false, message: limitError });
+
+  const caNum = Number(ca);
+  const exNum = Number(exam);
+  const total = Math.min(caNum + exNum, 100);
+  const saved = db.upsertResult({ studentId, class: cls, arm, subject, term, session, ca: caNum, exam: exNum, total });
+
+  return res.status(201).json({ success: true, data: enrichResult(saved) });
+};
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   POST /api/results/bulk
+   Body: { class, arm, term, session, rows: [{ studentId, subject, ca, exam }] }
+══════════════════════════════════════════════════════════════════════════════ */
+exports.bulkCreate = (req, res) => {
+  const { class: cls, arm, term, session, rows } = req.body;
+
+  if (!cls || !arm || !term || !session)
+    return res.status(400).json({ success: false, message: 'class, arm, term, and session are required.' });
+
+  if (!Array.isArray(rows) || rows.length === 0)
+    return res.status(400).json({ success: false, message: 'rows[] must be a non-empty array.' });
+
+  if (!canEditClass(req.user, cls, arm))
+    return res.status(403).json({ success: false, message: 'You can only enter results for your assigned class.' });
+
+  const saved  = [];
+  const errors = [];
+
+  rows.forEach((row, i) => {
+    const label = `Row ${i + 1}`;
+    const { studentId, subject, ca, exam } = row;
+
+    const missing = ['studentId', 'subject', 'ca', 'exam']
+      .filter(f => row[f] === undefined || row[f] === '');
+    if (missing.length) { errors.push({ row: label, reason: `Missing: ${missing.join(', ')}.` }); return; }
+
+    if (!db.findStudent(studentId)) {
+      errors.push({ row: label, reason: `Student "${studentId}" not found.` }); return;
+    }
+
+    const scoreError = validateScores(ca, exam);
+    if (scoreError) { errors.push({ row: label, reason: scoreError }); return; }
+
+    const limitError = checkSubjectLimit(studentId, subject, term, session);
+    if (limitError)  { errors.push({ row: label, reason: limitError }); return; }
+
+    const caNum = Number(ca);
+    const exNum = Number(exam);
+    const total = Math.min(caNum + exNum, 100);
+    const entry = db.upsertResult({ studentId, class: cls, arm, subject, term, session, ca: caNum, exam: exNum, total });
+    saved.push(enrichResult(entry));
+  });
+
+  const status = saved.length === 0 ? 400 : 207;
+  return res.status(status).json({
+    success: saved.length > 0,
+    saved:   saved.length,
+    errors:  errors.length,
+    data:    saved,
+    issues:  errors,
+  });
+};
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   PUT /api/results/:id  —  update CA/exam scores
+══════════════════════════════════════════════════════════════════════════════ */
+exports.update = (req, res) => {
+  const id  = Number(req.params.id);
+  const idx = (db.results || []).findIndex(r => r.id === id);
+  if (idx < 0)
+    return res.status(404).json({ success: false, message: 'Result not found.' });
+
+  const existing = db.results[idx];
+
+  if (!canEditClass(req.user, existing.class, existing.arm))
+    return res.status(403).json({ success: false, message: 'You can only edit results for your assigned class.' });
+
+  const ca   = req.body.ca   !== undefined ? req.body.ca   : existing.ca;
+  const exam = req.body.exam !== undefined ? req.body.exam : existing.exam;
+
+  const scoreError = validateScores(ca, exam);
+  if (scoreError) return res.status(400).json({ success: false, message: scoreError });
+
+  const caNum = Number(ca);
+  const exNum = Number(exam);
+  const total = Math.min(caNum + exNum, 100);
+
+  db.results[idx] = { ...existing, ca: caNum, exam: exNum, total };
+  return res.json({ success: true, data: enrichResult(db.results[idx]) });
+};
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   DELETE /api/results/:id  —  Admin only
+══════════════════════════════════════════════════════════════════════════════ */
+exports.remove = (req, res) => {
+  const id  = Number(req.params.id);
+  const idx = (db.results || []).findIndex(r => r.id === id);
+  if (idx < 0)
+    return res.status(404).json({ success: false, message: 'Result not found.' });
+
+  const [removed] = db.results.splice(idx, 1);
+  return res.json({ success: true, message: 'Result deleted.', data: removed });
+};
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   SUBJECT ALLOCATIONS
+   The frontend stores allocations under two key types:
+     • Class-level  → key: "{class}_{arm}"          e.g. "JSS 1_A"
+     • Per-student  → key: "{studentId}"             e.g. "S001"  (SS2/SS3 only)
+══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── GET /api/results/allocations/class/:class/:arm ─────────────────────────
+   Returns the subject list allocated to an entire class/arm.
+   ─────────────────────────────────────────────────────────────────────────── */
+exports.getClassAllocation = (req, res) => {
+  const { class: cls, arm } = req.params;
+
+  if (req.user.role === 'Teacher' && !canEditClass(req.user, cls, arm))
+    return res.status(403).json({ success: false, message: 'Access denied.' });
+
+  const key       = `${cls}_${arm}`;
+  const allocated = allocStore()[key] || [];
+  return res.json({ success: true, data: { class: cls, arm, subjects: allocated } });
+};
+
+/* ── PUT /api/results/allocations/class/:class/:arm  —  Admin/Teacher ────────
+   Body: { subjects: string[] }
+   Replaces the entire class-level allocation.
+   ─────────────────────────────────────────────────────────────────────────── */
+exports.setClassAllocation = (req, res) => {
+  const { class: cls, arm } = req.params;
+  const { subjects } = req.body;
+
+  if (!canEditClass(req.user, cls, arm))
+    return res.status(403).json({ success: false, message: 'You can only manage allocations for your assigned class.' });
+
+  if (!Array.isArray(subjects))
+    return res.status(400).json({ success: false, message: 'subjects must be an array of subject names.' });
+
+  const key = `${cls}_${arm}`;
+  allocStore()[key] = subjects;
+  return res.json({ success: true, data: { class: cls, arm, subjects } });
+};
+
+/* ── DELETE /api/results/allocations/class/:class/:arm  —  Admin only ────────
+   Clears all subjects for a class/arm.
+   ─────────────────────────────────────────────────────────────────────────── */
+exports.clearClassAllocation = (req, res) => {
+  const { class: cls, arm } = req.params;
+  const key = `${cls}_${arm}`;
+  allocStore()[key] = [];
+  return res.json({ success: true, message: `Allocation cleared for ${cls} ${arm}.` });
+};
+
+/* ── GET /api/results/allocations/student/:studentId ─────────────────────────
+   Returns the per-student subject allocation (SS2/SS3).
+   ─────────────────────────────────────────────────────────────────────────── */
+exports.getStudentAllocation = (req, res) => {
+  const { studentId } = req.params;
+
+  // Parent: own ward only
+  if (req.user.role === 'Parent' && req.user.wardId !== studentId)
+    return res.status(403).json({ success: false, message: 'Access denied.' });
+
+  const student = db.findStudent(studentId);
+  if (!student)
+    return res.status(404).json({ success: false, message: `Student "${studentId}" not found.` });
+
+  if (!SS_INDIVIDUAL_CLASSES.includes(student.class))
+    return res.status(400).json({
+      success: false,
+      message: `Per-student allocation only applies to SS2/SS3. ${student.name} is in ${student.class}.`,
+    });
+
+  const allocated = allocStore()[studentId] || [];
+  return res.json({ success: true, data: { studentId, subjects: allocated } });
+};
+
+/* ── PUT /api/results/allocations/student/:studentId  —  Admin/Teacher ───────
+   Body: { subjects: string[] }  (max 9 for SS2/SS3)
+   Replaces the individual student's subject list.
+   ─────────────────────────────────────────────────────────────────────────── */
+exports.setStudentAllocation = (req, res) => {
+  const { studentId } = req.params;
+  const { subjects }  = req.body;
+
+  const student = db.findStudent(studentId);
+  if (!student)
+    return res.status(404).json({ success: false, message: `Student "${studentId}" not found.` });
+
+  if (!SS_INDIVIDUAL_CLASSES.includes(student.class))
+    return res.status(400).json({
+      success: false,
+      message: `Per-student allocation only applies to SS2/SS3 students.`,
+    });
+
+  if (!Array.isArray(subjects))
+    return res.status(400).json({ success: false, message: 'subjects must be an array of subject names.' });
+
+  if (subjects.length > MAX_SUBJECTS_SS23)
+    return res.status(400).json({
+      success: false,
+      message: `SS2/SS3 students may not register more than ${MAX_SUBJECTS_SS23} subjects.`,
+    });
+
+  // Permission: teacher must be assigned to student's class/arm
+  if (!canEditClass(req.user, student.class, student.arm))
+    return res.status(403).json({ success: false, message: 'You can only manage allocations for your assigned class.' });
+
+  allocStore()[studentId] = subjects;
+  return res.json({ success: true, data: { studentId, subjects } });
+};
+
+/* ── POST /api/results/allocations/bulk-student  —  Admin/Teacher ────────────
+   Body: { class, arm, subjects: string[] }
+   Applies the same subject list to every student in a class/arm (SS2/SS3).
+   Frontend: openBulkAllocModal → confirmBulkAlloc
+   ─────────────────────────────────────────────────────────────────────────── */
+exports.bulkSetStudentAllocations = (req, res) => {
+  const { class: cls, arm, subjects } = req.body;
+
+  if (!cls || !arm)
+    return res.status(400).json({ success: false, message: 'class and arm are required.' });
+
+  if (!SS_INDIVIDUAL_CLASSES.includes(cls))
+    return res.status(400).json({ success: false, message: `Bulk per-student allocation only applies to SS2/SS3.` });
+
+  if (!canEditClass(req.user, cls, arm))
+    return res.status(403).json({ success: false, message: 'You can only manage allocations for your assigned class.' });
+
+  if (!Array.isArray(subjects) || subjects.length === 0)
+    return res.status(400).json({ success: false, message: 'subjects must be a non-empty array.' });
+
+  if (subjects.length > MAX_SUBJECTS_SS23)
+    return res.status(400).json({
+      success: false,
+      message: `Cannot allocate more than ${MAX_SUBJECTS_SS23} subjects per student.`,
+    });
+
+  const students = (db.students || []).filter(s => s.class === cls && s.arm === arm);
+  if (!students.length)
+    return res.status(404).json({ success: false, message: `No students found in ${cls} ${arm}.` });
+
+  const store = allocStore();
+  students.forEach(s => { store[s.id] = [...subjects]; });
+
+  return res.json({
+    success: true,
+    message: `${subjects.length} subjects allocated to ${students.length} students in ${cls} ${arm}.`,
+    data: { class: cls, arm, subjects, studentsUpdated: students.length },
   });
 };

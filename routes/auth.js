@@ -1,53 +1,42 @@
-const express = require('express');
-const bcrypt  = require('bcryptjs');
-const jwt     = require('jsonwebtoken');
-const db      = require('../config/db');
+'use strict';
+
+/**
+ * authRoutes.js — Sacred Heart College Eziukwu Aba (SAHARCO)
+ * ──────────────────────────────────────────────────────────────
+ * Base path (mounted in app.js): /api/auth
+ *
+ * Public routes  (no token required):
+ *   POST  /api/auth/login
+ *   POST  /api/auth/refresh
+ *   POST  /api/auth/forgot-password
+ *   POST  /api/auth/reset-password
+ *
+ * Protected routes (valid access-token cookie required):
+ *   GET   /api/auth/me
+ *   POST  /api/auth/logout
+ *   POST  /api/auth/change-password
+ */
+
+const express        = require('express');
+const authController = require('../controllers/authController');
 const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
 
-/* ── POST /api/auth/login ─────────────────── */
-router.post('/login', (req, res) => {
-  const { email, password } = req.body;
+// ── Public ────────────────────────────────────────────────────────────────────
+// These endpoints must remain unauthenticated — the client has no token yet.
 
-  if (!email || !password) {
-    return res.status(400).json({ success: false, message: 'Email and password are required.' });
-  }
+router.post('/login',           authController.login);
+router.post('/refresh',         authController.refreshToken);
+router.post('/forgot-password', authController.forgotPassword);
+router.post('/reset-password',  authController.resetPassword);
 
-  const user = db.findUserByEmail(email);
-  if (!user) {
-    return res.status(401).json({ success: false, message: 'Invalid credentials.' });
-  }
+// ── Protected (token required from here down) ─────────────────────────────────
 
-  const match = bcrypt.compareSync(password, user.passwordHash);
-  if (!match) {
-    return res.status(401).json({ success: false, message: 'Invalid credentials.' });
-  }
+router.use(authenticate);
 
-  const token = jwt.sign(
-    { id: user.id, role: user.role },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
-  );
-
-  res.json({
-    success: true,
-    token,
-    user: {
-      id:             user.id,
-      name:           user.name,
-      email:          user.email,
-      role:           user.role,
-      assignedClass:  user.assignedClass || null,
-      assignedArm:    user.assignedArm   || null,
-    },
-  });
-});
-
-/* ── GET /api/auth/me ─────────────────────── */
-router.get('/me', authenticate, (req, res) => {
-  const { passwordHash, ...safe } = req.user;
-  res.json({ success: true, user: safe });
-});
+router.get ('/me',              authController.getMe);
+router.post('/logout',          authController.logout);
+router.post('/change-password', authController.changePassword);
 
 module.exports = router;
