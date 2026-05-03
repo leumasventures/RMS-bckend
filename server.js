@@ -8,7 +8,6 @@
 require('dotenv').config();
 
 const express    = require('express');
-const path       = require('path');
 const cors       = require('cors');
 const helmet     = require('helmet');
 const morgan     = require('morgan');
@@ -21,7 +20,7 @@ const PORT = process.env.PORT || 5000;
 const ENV  = process.env.NODE_ENV || 'development';
 
 /* ─────────────────────────────────────────────────────────────
-   BANNER  (matches the running console output)
+   BANNER
 ───────────────────────────────────────────────────────────── */
 function printBanner() {
   console.log('╔══════════════════════════════════════════╗');
@@ -35,26 +34,21 @@ function printBanner() {
 
 /* ─────────────────────────────────────────────────────────────
    SECURITY HEADERS
-   Content-Security-Policy is relaxed here for development;
-   tighten for production (remove 'unsafe-inline' etc.).
 ───────────────────────────────────────────────────────────── */
 app.use(
   helmet({
-    contentSecurityPolicy: ENV === 'production'
-      ? undefined          // use helmet defaults in prod
-      : false,             // disable in dev for easier debugging
+    contentSecurityPolicy: ENV === 'production' ? undefined : false,
   })
 );
 
 /* ─────────────────────────────────────────────────────────────
    CORS
-   In production, replace the origin array with your real domain.
 ───────────────────────────────────────────────────────────── */
 app.use(
   cors({
     origin: ENV === 'production'
-      ? ['https://shc.edu.ng', 'https://portal.shc.edu.ng']
-      : ['http://localhost:5000', 'http://127.0.0.1:5500', 'null'],
+      ? ['https://shc.edu.ng', 'https://portal.shc.edu.ng', 'https://sacredheartcollegeaba.com']
+      : true,              // allow all origins in dev
     credentials: true,
     methods:     ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-shc-session'],
@@ -69,14 +63,11 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 /* ─────────────────────────────────────────────────────────────
    HTTP REQUEST LOGGER
-   'dev' format in development; 'combined' in production.
 ───────────────────────────────────────────────────────────── */
 app.use(morgan(ENV === 'production' ? 'combined' : 'dev'));
 
 /* ─────────────────────────────────────────────────────────────
-   SESSION  (server-side)
-   In production replace secret with a long random env variable.
-   Consider connect-mongo or connect-pg-simple for persistence.
+   SESSION
 ───────────────────────────────────────────────────────────── */
 app.use(
   session({
@@ -85,7 +76,7 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure:   ENV === 'production',   // HTTPS only in prod
+      secure:   ENV === 'production',
       httpOnly: true,
       sameSite: 'lax',
       maxAge:   8 * 60 * 60 * 1000,    // 8 hours
@@ -94,16 +85,7 @@ app.use(
 );
 
 /* ─────────────────────────────────────────────────────────────
-   STATIC FILES
-   Serve HTML / CSS / client JS from the public/ folder.
-   parentsPortal.html, checkResult.html, login.html, etc.
-───────────────────────────────────────────────────────────── */
-app.use(express.static(path.join(__dirname, 'public')));
-
-/* ─────────────────────────────────────────────────────────────
    HEALTH CHECK  (/api/health)
-   Returns server status, uptime, and environment.
-   No auth required — used by load-balancers / monitoring.
 ───────────────────────────────────────────────────────────── */
 app.get('/api/health', (req, res) => {
   res.status(200).json({
@@ -118,17 +100,13 @@ app.get('/api/health', (req, res) => {
 });
 
 /* ─────────────────────────────────────────────────────────────
-   LOGIN ENDPOINT
-   Handles POST /api/auth/login from the login page.
-   Validates credentials against the USERS store (login.js logic
-   mirrored here in the backend) and writes the session.
+   AUTH — LOGIN
 ───────────────────────────────────────────────────────────── */
-const { USERS, STUDENTS, PRIVILEGES, resolveChildren } = require('./data/users');
+const { USERS, PRIVILEGES, resolveChildren } = require('./data/users');
 
 app.post('/api/auth/login', (req, res) => {
   const { role, username, password } = req.body;
 
-  /* Basic input guard */
   if (!role || !username || !password) {
     return res.status(400).json({ success: false, error: 'role, username and password are required.' });
   }
@@ -149,7 +127,6 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ success: false, error: 'Invalid credentials.' });
   }
 
-  /* Build session object */
   const sessionData = {
     name:          user.name,
     role:          user.role,
@@ -176,7 +153,7 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 /* ─────────────────────────────────────────────────────────────
-   LOGOUT
+   AUTH — LOGOUT
 ───────────────────────────────────────────────────────────── */
 app.post('/api/auth/logout', (req, res) => {
   req.session.destroy(err => {
@@ -187,7 +164,7 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 /* ─────────────────────────────────────────────────────────────
-   SESSION STATUS  (for client-side auth check on page load)
+   AUTH — SESSION CHECK
 ───────────────────────────────────────────────────────────── */
 app.get('/api/auth/me', (req, res) => {
   const s = req.session?.shc_session;
@@ -199,27 +176,22 @@ app.get('/api/auth/me', (req, res) => {
       role:          s.role,
       assignedClass: s.assignedClass,
       assignedArm:   s.assignedArm,
-      children:      s.children,   // null for non-parents
+      children:      s.children,
     },
   });
 });
 
 /* ─────────────────────────────────────────────────────────────
    PORTAL API ROUTES
-   All /api/parent-portal/* and /api/check-result/* routes.
 ───────────────────────────────────────────────────────────── */
 app.use('/api', portalRoutes);
 
 /* ─────────────────────────────────────────────────────────────
-   SPA FALLBACK
-   Any non-API GET that doesn't match a static file gets
-   index.html (or login.html) so client-side routing works.
+   404 — API ONLY
+   No static files, no SPA fallback. All routes are under /api.
 ───────────────────────────────────────────────────────────── */
-app.get('*', (req, res) => {
-  if (req.path.startsWith('/api')) {
-    return res.status(404).json({ success: false, error: 'API endpoint not found.' });
-  }
-  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+app.use((req, res) => {
+  res.status(404).json({ success: false, error: `Cannot ${req.method} ${req.path}` });
 });
 
 /* ─────────────────────────────────────────────────────────────
@@ -242,4 +214,4 @@ app.use((err, req, res, _next) => {
 ───────────────────────────────────────────────────────────── */
 app.listen(PORT, () => printBanner());
 
-module.exports = app;   // exported for test runners (Jest, Supertest)
+module.exports = app;
