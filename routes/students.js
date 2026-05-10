@@ -1,48 +1,62 @@
 'use strict';
 
-/**
- * studentRoutes.js — Sacred Heart College Eziukwu Aba (SAHARCO)
- * ──────────────────────────────────────────────────────────────────
- * Mount at: /api/students
- *
- * GET    /                      Admin, Teacher (scoped), Parent (ward only)
- * GET    /:id                   Admin, Teacher (scoped), Parent (ward only)
- * GET    /:id/summary           Admin, Teacher (scoped)
- * POST   /                      Admin only
- * POST   /bulk                  Admin only
- * PUT    /:id                   Admin only
- * PATCH  /:id/transfer          Admin only
- * PATCH  /:id/attendance        Admin, Teacher (own class only)
- * DELETE /:id                   Admin only
- *
- * Note: /bulk must be declared BEFORE /:id so Express doesn't
- * treat "bulk" as a student ID.
- */
-
-const express   = require('express');
-const ctrl      = require('../controllers/studentController');
+const express  = require('express');
+const ctrl     = require('../controllers/studentController');
 const { authenticate, authorize } = require('../middleware/auth');
 
-const router     = express.Router();
-const adminOnly  = authorize('Admin');
-const staffOnly  = authorize('Admin', 'Teacher');
+const router    = express.Router();
+const adminOnly = authorize('Admin');
+const staffOnly = authorize('Admin', 'Teacher');
 
-// All student routes require authentication
 router.use(authenticate);
 
-// ── Read ──────────────────────────────────────────────────────────────────────
-router.get('/',           ctrl.getAll);
-router.get('/:id',        ctrl.getOne);
-router.get('/:id/summary', staffOnly, ctrl.getSummary);
+/* ── Named / aggregate routes — BEFORE /:id ────────────────────────────── */
 
-// ── Write (Admin only) ────────────────────────────────────────────────────────
-router.post('/bulk',      adminOnly, ctrl.bulkCreate);   // before /:id
-router.post('/',          adminOnly, ctrl.create);
-router.put ('/:id',       adminOnly, ctrl.update);
-router.delete('/:id',     adminOnly, ctrl.remove);
+// GET /api/students/export?class=&arm=
+router.get('/export', adminOnly, ctrl.exportStudents);
 
-// ── Targeted patches ──────────────────────────────────────────────────────────
+// POST /api/students/bulk   body: { class, arm, students: [] }
+// Must be before /:id so "bulk" isn't treated as a student id
+router.post('/bulk', adminOnly, ctrl.bulkCreate);
+
+/* ── Collection CRUD ────────────────────────────────────────────────────── */
+
+// GET  /api/students?class=&arm=&gender=&search=&sortBy=&sortDir=&page=&limit=
+router.get('/',  ctrl.getAll);
+
+// POST /api/students   body: { id?, name, class, arm, gender, … }
+router.post('/', adminOnly, ctrl.create);
+
+/* ── Per-record operations — /:id last ─────────────────────────────────── */
+
+// GET  /api/students/:id
+router.get('/:id',              ctrl.getOne);
+
+// GET  /api/students/:id/summary?term=&session=
+router.get('/:id/summary',      staffOnly, ctrl.getSummary);
+
+// GET  /api/students/:id/results?termId=&sessionId=
+router.get('/:id/results',      ctrl.getResults);
+
+// GET  /api/students/:id/attendance?termId=&sessionId=
+router.get('/:id/attendance',   ctrl.getAttendance);
+
+// GET  /api/students/:id/report-card?termId=
+router.get('/:id/report-card',  ctrl.getReportCard);
+
+// PUT    /api/students/:id
+router.put('/:id',              adminOnly, ctrl.update);
+
+// PATCH  /api/students/:id/transfer     body: { class, arm }
 router.patch('/:id/transfer',   adminOnly, ctrl.transfer);
+
+// PATCH  /api/students/:id/attendance   body: { attendance: 0-100 }
 router.patch('/:id/attendance', staffOnly, ctrl.updateAttendance);
+
+// PATCH  /api/students/:id/status       body: { status }
+router.patch('/:id/status',     adminOnly, ctrl.setStatus);
+
+// DELETE /api/students/:id
+router.delete('/:id',           adminOnly, ctrl.remove);
 
 module.exports = router;

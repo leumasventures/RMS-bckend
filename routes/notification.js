@@ -1,49 +1,50 @@
 'use strict';
 
-const express                  = require('express');
-const notificationController   = require('../controllers/notificationController');
+/**
+ * notificationRoutes.js — Sacred Heart College (SAHARCO)
+ * Mount at: /api/notifications
+ */
+
+const express                = require('express');
+const notificationController = require('../controllers/notificationController');
 const { authenticate, authorize } = require('../middleware/auth');
 
-const router = express.Router();
+const router    = express.Router();
+const adminOnly = authorize('Admin');
+
 router.use(authenticate);
 
-/* ── Named routes — before /:id ─────────────────────────────────────────── */
+/* ── Named routes — BEFORE /:id ─────────────────────────────────────────── */
 
 // GET  /api/notifications/unread-count
-// Lightweight badge endpoint — avoids fetching full list just for the count.
-// Mirrors _updateNotificationBadge() which only needs the number.
+// Lightweight badge endpoint — just returns the count.
 router.get('/unread-count', notificationController.getUnreadCount);
 
 // PATCH /api/notifications/read-all
 // Mark every notification as read for the requesting user.
-// Mirrors openNotificationsPanel() read loop.
 router.patch('/read-all', notificationController.markAllRead);
 
-// POST /api/notifications/system  — Admin only
-// Runs the automatic system checks (low attendance, no results).
-router.post('/system', authorize('Admin'), notificationController.runSystemChecks);
+// POST /api/notifications/system   Admin only
+// Runs automatic system checks (low attendance, missing results, etc.).
+router.post('/system', adminOnly, notificationController.runSystemChecks);
 
-// DELETE /api/notifications  — Admin only
-// Clears all notifications globally — mirrors clearAllNotifications().
-router.delete('/', authorize('Admin'), notificationController.clearAll);
-
-/* ── Collection read / write ────────────────────────────────────────────── */
+/* ── Collection ──────────────────────────────────────────────────────────── */
 
 // GET  /api/notifications?unreadOnly=&type=&limit=
-// Returns notifications relevant to the requesting user (newest first).
-router.get('/', notificationController.getAll);
+router.get('/',  notificationController.getAll);
 
 // POST /api/notifications   body: { message, type?, audience?, targetId?, link? }
-// Push a new notification. Mirrors pushNotification() from Admin contexts.
-router.post('/', authorize('Admin'), notificationController.create);
+router.post('/', adminOnly, notificationController.create);
 
-/* ── Per-notification operations — /:id last ────────────────────────────── */
+// DELETE /api/notifications   Admin only — clears all notifications globally
+router.delete('/', adminOnly, notificationController.clearAll);
+
+/* ── Per-record — /:id last ──────────────────────────────────────────────── */
 
 // PATCH  /api/notifications/:id/read
-// Mark a single notification as read for the requesting user.
 router.patch('/:id/read', notificationController.markRead);
 
-// DELETE /api/notifications/:id  — Admin only
-router.delete('/:id', authorize('Admin'), notificationController.remove);
+// DELETE /api/notifications/:id
+router.delete('/:id', adminOnly, notificationController.remove);
 
 module.exports = router;

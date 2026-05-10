@@ -4,43 +4,51 @@ const express          = require('express');
 const staffController  = require('../controllers/staffController');
 const { authenticate, authorize } = require('../middleware/auth');
 
-const router = express.Router();
+const router    = express.Router();
+const adminOnly = authorize('Admin');
 
-// All staff routes require authentication
 router.use(authenticate);
 
-/* ── Read (any authenticated user) ─────────────────────────────────────────── */
+/* ── Named / aggregate routes — BEFORE /:id ────────────────────────────── */
 
-// GET /api/staff?category=&status=&department=&subject=&classUnit=&search=
-router.get('/',                                  staffController.getAll);
+// GET /api/staff/export?category=&status=
+router.get('/export', adminOnly, staffController.exportStaff);
 
-// GET /api/staff/:id
-router.get('/:id',                               staffController.getOne);
+/* ── Collection CRUD ────────────────────────────────────────────────────── */
 
-// GET /api/staff/:id/students  (academic staff only)
-router.get('/:id/students',                      staffController.getStudents);
+// GET  /api/staff?category=&status=&department=&subject=&classUnit=&search=
+router.get('/',    staffController.getAll);
 
-/* ── Write (Admin only) ─────────────────────────────────────────────────────── */
+// POST /api/staff   body: { name, category, position, … }
+router.post('/',   adminOnly, staffController.create);
 
-// POST /api/staff
-router.post('/',                authorize('Admin'), staffController.create);
+/* ── Per-record operations — /:id last ─────────────────────────────────── */
 
-// PUT /api/staff/:id  (full update)
-router.put('/:id',              authorize('Admin'), staffController.update);
+// GET  /api/staff/:id
+router.get('/:id',              staffController.getOne);
 
-// PATCH /api/staff/:id/status     body: { status }
-router.patch('/:id/status',     authorize('Admin'), staffController.updateStatus);
+// GET  /api/staff/:id/students
+router.get('/:id/students',     staffController.getStudents);
 
-// PATCH /api/staff/:id/assign-class  body: { classUnit, arm }
-router.patch('/:id/assign-class', authorize('Admin'), staffController.assignClass);
+// PUT  /api/staff/:id   full update
+router.put('/:id',              adminOnly, staffController.update);
 
-// POST /api/staff/:id/credentials  body: { credentials: [{name,size,type}] }
-router.post('/:id/credentials', authorize('Admin'), staffController.addCredentials);
+// PATCH /api/staff/:id/status         body: { status }
+router.patch('/:id/status',     adminOnly, staffController.updateStatus);
+
+// PATCH /api/staff/:id/assign-class   body: { classUnit, arm }
+router.patch('/:id/assign-class',  adminOnly, staffController.assignClass);
+
+// PATCH /api/staff/:id/assign-subject body: { subject_id, class_id? }
+router.patch('/:id/assign-subject', adminOnly, staffController.assignSubject);
+
+// POST  /api/staff/:id/credentials    body: { credentials: [{name,size,type}] }
+router.post('/:id/credentials',  adminOnly, staffController.addCredentials);
 
 // DELETE /api/staff/:id/credentials/:credIndex
-router.delete('/:id/credentials/:credIndex', authorize('Admin'), staffController.removeCredential);
+router.delete('/:id/credentials/:credIndex', adminOnly, staffController.removeCredential);
 
 // DELETE /api/staff/:id
-router.delete('/:id',           authorize('Admin'), staffController.remove);
+router.delete('/:id', adminOnly, staffController.remove);
 
 module.exports = router;

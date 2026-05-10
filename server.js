@@ -7,13 +7,12 @@
 
 require('dotenv').config();
 
-const express    = require('express');
-const cors       = require('cors');
-const helmet     = require('helmet');
-const morgan     = require('morgan');
-const session    = require('express-session');
-
-const portalRoutes = require('./routes/routes');
+const express  = require('express');
+const cors     = require('cors');
+const helmet   = require('helmet');
+const morgan   = require('morgan');
+const session  = require('express-session');
+const db       = require('./config/db');
 
 const app  = express();
 const PORT = process.env.PORT || 5000;
@@ -44,13 +43,15 @@ app.use(
 /* ─────────────────────────────────────────────────────────────
    CORS
 ───────────────────────────────────────────────────────────── */
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  : ['https://sacredheartcollegeaba.com', 'https://www.sacredheartcollegeaba.com'];
+
 app.use(
   cors({
-    origin: ENV === 'production'
-      ? ['https://shc.edu.ng', 'https://portal.shc.edu.ng', 'https://sacredheartcollegeaba.com']
-      : true,              // allow all origins in dev
-    credentials: true,
-    methods:     ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    origin:         ENV === 'production' ? allowedOrigins : true,
+    credentials:    true,
+    methods:        ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-shc-session'],
   })
 );
@@ -58,8 +59,8 @@ app.use(
 /* ─────────────────────────────────────────────────────────────
    BODY PARSERS
 ───────────────────────────────────────────────────────────── */
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 /* ─────────────────────────────────────────────────────────────
    HTTP REQUEST LOGGER
@@ -71,124 +72,74 @@ app.use(morgan(ENV === 'production' ? 'combined' : 'dev'));
 ───────────────────────────────────────────────────────────── */
 app.use(
   session({
-    name:   'shc_sid',
-    secret: process.env.SESSION_SECRET || 'shc_dev_secret_change_in_prod',
-    resave: false,
+    name:              'shc_sid',
+    secret:            process.env.SESSION_SECRET || 'shc_dev_secret_change_in_prod',
+    resave:            false,
     saveUninitialized: false,
     cookie: {
       secure:   ENV === 'production',
       httpOnly: true,
-      sameSite: 'lax',
-      maxAge:   8 * 60 * 60 * 1000,    // 8 hours
+      sameSite: ENV === 'production' ? 'strict' : 'lax',
+      maxAge:   8 * 60 * 60 * 1000,   // 8 hours
     },
   })
 );
 
 /* ─────────────────────────────────────────────────────────────
-   HEALTH CHECK  (/api/health)
+   HEALTH CHECK
 ───────────────────────────────────────────────────────────── */
-app.get('/api/health', (req, res) => {
-  res.status(200).json({
-    success:     true,
-    status:      'ok',
-    school:      'Sacred Heart College Eziukwu Aba',
-    environment: ENV,
-    uptime:      `${Math.floor(process.uptime())}s`,
-    timestamp:   new Date().toISOString(),
-    version:     process.env.npm_package_version || '1.0.0',
-  });
-});
-
-/* ─────────────────────────────────────────────────────────────
-   AUTH — LOGIN
-───────────────────────────────────────────────────────────── */
-const { USERS, PRIVILEGES, resolveChildren } = require('./data/users');
-
-app.post('/api/auth/login', (req, res) => {
-  const { role, username, password } = req.body;
-
-  if (!role || !username || !password) {
-    return res.status(400).json({ success: false, error: 'role, username and password are required.' });
+app.get('/api/health', async (req, res) => {
+  try {
+    await db.pool.query('SELECT 1');
+    res.status(200).json({
+      success:     true,
+      status:      'ok',
+      db:          'connected',
+      school:      'Sacred Heart College Eziukwu Aba',
+      environment: ENV,
+      uptime:      `${Math.floor(process.uptime())}s`,
+      timestamp:   new Date().toISOString(),
+      version:     process.env.npm_package_version || '1.0.0',
+      cache: {
+        classes:  db.classes.length,
+        students: db.students.length,
+        staff:    db.staff.length,
+        users:    db.users.length,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      status:  'error',
+      db:      err.message,
+    });
   }
-
-  const roleMap = { admin: 'Admin', teacher: 'Teacher', parent: 'Parent' };
-  const expectedRole = roleMap[role.toLowerCase()];
-  if (!expectedRole) {
-    return res.status(400).json({ success: false, error: 'Invalid role.' });
-  }
-
-  const user = USERS.find(u =>
-    (u.username === username || u.email === username) &&
-    u.password  === password &&
-    u.role      === expectedRole
-  );
-
-  if (!user) {
-    return res.status(401).json({ success: false, error: 'Invalid credentials.' });
-  }
-
-  const sessionData = {
-    name:          user.name,
-    role:          user.role,
-    email:         user.email         || '',
-    teacherId:     user.teacherId     || null,
-    assignedClass: user.assignedClass || null,
-    assignedArm:   user.assignedArm   || null,
-    children:      resolveChildren(user),
-    privileges:    PRIVILEGES[user.role],
-    loggedInAt:    Date.now(),
-  };
-
-  req.session.shc_session = sessionData;
-
-  return res.status(200).json({
-    success:  true,
-    message:  'Login successful.',
-    role:     sessionData.role,
-    name:     sessionData.name,
-    redirect: sessionData.role === 'Parent'
-      ? '/parentsPortal.html'
-      : '/dashboard.html',
-  });
 });
 
 /* ─────────────────────────────────────────────────────────────
-   AUTH — LOGOUT
+   ROUTES
+   Order matters — specific routes before the portal catch-all.
 ───────────────────────────────────────────────────────────── */
-app.post('/api/auth/logout', (req, res) => {
-  req.session.destroy(err => {
-    if (err) return res.status(500).json({ success: false, error: 'Logout failed.' });
-    res.clearCookie('shc_sid');
-    res.status(200).json({ success: true, message: 'Logged out.' });
-  });
-});
+app.use('/api/auth',          require('./routes/auth'));
+app.use('/api/classes',       require('./routes/class'));
+app.use('/api/students',      require('./routes/students'));
+app.use('/api/staff',         require('./routes/staff'));
+app.use('/api/subjects',      require('./routes/subjects'));
+app.use('/api/results',       require('./routes/results'));
+app.use('/api/attendance',    require('./routes/attendance'));
+app.use('/api/fees',          require('./routes/fees'));
+app.use('/api/admissions',    require('./routes/admission'));
+app.use('/api/reforms',       require('./routes/reforms'));
+app.use('/api/report-cards',  require('./routes/reportCard'));
+app.use('/api/notifications', require('./routes/notification'));
+app.use('/api/access-tokens', require('./routes/accesstoken'));
+
+app.use('/api/timetable',     require('./routes/timetable'));
+// Portal + check-result last — its catch-all must not swallow other routes
+app.use('/api',               require('./routes/routes'));
 
 /* ─────────────────────────────────────────────────────────────
-   AUTH — SESSION CHECK
-───────────────────────────────────────────────────────────── */
-app.get('/api/auth/me', (req, res) => {
-  const s = req.session?.shc_session;
-  if (!s) return res.status(401).json({ success: false, error: 'Not authenticated.' });
-  res.status(200).json({
-    success: true,
-    data: {
-      name:          s.name,
-      role:          s.role,
-      assignedClass: s.assignedClass,
-      assignedArm:   s.assignedArm,
-      children:      s.children,
-    },
-  });
-});
-
-/* ─────────────────────────────────────────────────────────────
-   PORTAL API ROUTES
-───────────────────────────────────────────────────────────── */
-app.use('/api', portalRoutes);
-
-/* ─────────────────────────────────────────────────────────────
-   404 — API ONLY
-   No static files, no SPA fallback. All routes are under /api.
+   404
 ───────────────────────────────────────────────────────────── */
 app.use((req, res) => {
   res.status(404).json({ success: false, error: `Cannot ${req.method} ${req.path}` });
@@ -201,10 +152,9 @@ app.use((req, res) => {
 app.use((err, req, res, _next) => {
   const statusCode = err.statusCode || err.status || 500;
   if (ENV !== 'production') console.error('[SHC Error]', err);
-
   res.status(statusCode).json({
-    success:    false,
-    error:      err.message || 'Internal server error.',
+    success: false,
+    error:   err.message || 'Internal server error.',
     ...(ENV !== 'production' && { stack: err.stack }),
   });
 });
@@ -212,6 +162,14 @@ app.use((err, req, res, _next) => {
 /* ─────────────────────────────────────────────────────────────
    START SERVER
 ───────────────────────────────────────────────────────────── */
-app.listen(PORT, () => printBanner());
+app.listen(PORT, async () => {
+  printBanner();
+  try {
+    await db.sync();
+  } catch (err) {
+    console.error('❌ DB sync failed:', err.message);
+    console.error('   Check DB_* env vars and that schema.sql has been run.');
+  }
+});
 
 module.exports = app;

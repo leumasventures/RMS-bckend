@@ -4,25 +4,28 @@ const express           = require('express');
 const subjectController = require('../controllers/subjectController');
 const { authenticate, authorize } = require('../middleware/auth');
 
-const router = express.Router();
+const router    = express.Router();
+const adminOnly = authorize('Admin');
 
-// All subject routes require authentication
 router.use(authenticate);
 
-/* ── Read (any authenticated user) ─────────────────────────────────────────── */
+/* ── Collection CRUD ────────────────────────────────────────────────────── */
 
-// GET /api/subjects?level=&type=&code=
+// GET  /api/subjects?level=&type=&code=&search=
 router.get('/',    subjectController.getAll);
 
-// GET /api/subjects/:id
-router.get('/:id', subjectController.getOne);
+// POST /api/subjects   body: { name, code, level?, type? }
+router.post('/',   adminOnly, subjectController.create);
 
-/* ── Write (Admin only) ─────────────────────────────────────────────────────── */
+/* ── Per-record operations — /:id last ─────────────────────────────────── */
 
-// POST /api/subjects   body: { name, code, level, type }
-router.post('/',    authorize('Admin'), subjectController.create);
+// GET    /api/subjects/:id   (also accepts name or code)
+router.get('/:id',    subjectController.getOne);
+
+// PUT    /api/subjects/:id   body: { name?, code?, level?, type? }
+router.put('/:id',    adminOnly, subjectController.update);
 
 // DELETE /api/subjects/:id
-router.delete('/:id', authorize('Admin'), subjectController.remove);
+router.delete('/:id', adminOnly, subjectController.remove);
 
 module.exports = router;

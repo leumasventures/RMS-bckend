@@ -1,7 +1,7 @@
 'use strict';
 
 const express              = require('express');
-const tokenController      = require('../controllers/accessTokenController');
+const tokenController      = require('../controllers/accesstokenController');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();

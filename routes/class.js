@@ -1,51 +1,55 @@
 'use strict';
 
-/**
- * classRoutes.js — Sacred Heart College Eziukwu Aba (SAHARCO)
- * ──────────────────────────────────────────────────────────────
- * Base path (mounted in app.js): /api/classes
- *
- * All routes require a valid session (authenticate).
- * Role rules are enforced inside each controller, but the route
- * layer adds a coarse guard so unauthorized roles never reach
- * controller logic at all.
- *
- *   GET  /api/classes                       → Admin, Teacher
- *   GET  /api/classes/:name                 → Admin, Teacher
- *   GET  /api/classes/:name/arms            → Admin, Teacher
- *   GET  /api/classes/:name/students        → Admin, Teacher
- *   GET  /api/classes/:name/summary         → Admin, Teacher
- */
-
 const express          = require('express');
 const classController  = require('../controllers/classController');
 const { authenticate, authorize } = require('../middleware/auth');
 
-const router = express.Router();
+const router    = express.Router();
+const adminOnly = authorize('Admin');
+const staffOnly = authorize('Admin', 'Teacher');
 
-// Every class route requires a valid session
 router.use(authenticate);
 
-// Students and Parents have no business browsing class data directly —
-// their dashboards use student-scoped or parent-scoped endpoints instead.
-router.use(authorize('Admin', 'Teacher'));
+/* ── Named sub-routes — BEFORE /:name to avoid param capture ───────────── */
 
-// ── Routes ────────────────────────────────────────────────────────────────────
+// GET  /api/classes/:name/arms
+router.get('/:name/arms',            staffOnly,  classController.getArms);
 
-// List all classes (supports ?level=Junior|Senior filter)
-router.get('/', classController.getAll);
+// POST /api/classes/:name/arms       body: { arm } or { arms: [] }
+router.post('/:name/arms',           adminOnly,  classController.addArm);
 
-// Single class detail with per-arm student counts
-router.get('/:name', classController.getOne);
+// PATCH /api/classes/:name/arms/:arm  body: { new_name }
+router.patch('/:name/arms/:arm',     adminOnly,  classController.renameArm);
 
-// Arm list only — lightweight, used for cascading dropdowns
-router.get('/:name/arms', classController.getArms);
+// DELETE /api/classes/:name/arms/:arm
+router.delete('/:name/arms/:arm',    adminOnly,  classController.deleteArm);
 
-// Students in a class/arm (?arm=A optional)
-router.get('/:name/students', classController.getStudents);
+// GET  /api/classes/:name/students?arm=
+router.get('/:name/students',        staffOnly,  classController.getStudents);
 
-// Attendance + result statistics for a class/arm/term/session
-// ?arm=A&term=First&session=2024/2025
-router.get('/:name/summary', classController.getSummary);
+// GET  /api/classes/:name/summary?arm=&term=&session=
+router.get('/:name/summary',         staffOnly,  classController.getSummary);
+
+// PATCH /api/classes/:name/assign-teacher   body: { teacher_id, arm? }
+router.patch('/:name/assign-teacher', adminOnly, classController.assignTeacher);
+
+/* ── Collection CRUD ────────────────────────────────────────────────────── */
+
+// GET  /api/classes?level=&search=
+router.get('/',     staffOnly, classController.getAll);
+
+// POST /api/classes   body: { name, level, arms[] }
+router.post('/',    adminOnly, classController.create);
+
+/* ── Per-record operations — /:name last ────────────────────────────────── */
+
+// GET    /api/classes/:name
+router.get('/:name',    staffOnly, classController.getOne);
+
+// PUT    /api/classes/:name   body: { name?, level?, arms? }
+router.put('/:name',    adminOnly, classController.update);
+
+// DELETE /api/classes/:name
+router.delete('/:name', adminOnly, classController.remove);
 
 module.exports = router;
