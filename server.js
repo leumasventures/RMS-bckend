@@ -135,6 +135,7 @@ app.use('/api/notifications', require('./routes/notification'));
 app.use('/api/access-tokens', require('./routes/accesstoken'));
 
 app.use('/api/timetable',     require('./routes/timetable'));
+app.use('/api/admin/settings',require('./routes/admin'));
 // Portal + check-result last — its catch-all must not swallow other routes
 app.use('/api',               require('./routes/routes'));
 

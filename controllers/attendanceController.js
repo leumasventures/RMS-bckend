@@ -1,509 +1,280 @@
 'use strict';
-
-/**
- * attendanceController.js — Sacred Heart College (SAHARCO)  v2
- *
- * This file supersedes the previous attendanceController.js output.
- * The duplicate copy shipped in document index 11 has been merged and
- * the following changes applied on top of the previous version:
- *
- *   1. normaliseStatus fixed — the original `String(raw).toLowerCase()[0]`
- *      trick returns 'p' for 'present' but ALSO 'p' for 'partial'.
- *      Replaced with a proper alias map.
- *   2. bulkMark defaults missing status to 'p' (Present) matching
- *      attMarkAllToday('P') frontend call.
- *   3. exportAttendance added (was missing from the document-11 version).
- *   4. Teacher access guard: a teacher with no assignedArm sees all arms
- *      in their class (needed for form-master role).
- *   5. setStudentDomains returns 201 on create, 200 on update (was always 200).
- *   6. All response shapes use the unified { success, data, ...meta } pattern.
- *
- * Routes:
- *   GET  /api/attendance                     getAll
- *   GET  /api/attendance/school-days/:term   getSchoolDays
- *   GET  /api/attendance/summary/:studentId  getSummary
- *   GET  /api/attendance/class-summary       getClassSummary
- *   POST /api/attendance                     mark
- *   POST /api/attendance/bulk                bulkMark
- *   PUT  /api/attendance/:id                 update
- *   DEL  /api/attendance/:id                 remove
- *   GET  /api/attendance/export              exportAttendance  (CSV)
- *   GET  /api/attendance/domains             getClassDomains
- *   PUT  /api/attendance/domains/:studentId  setStudentDomains
- */
-
 const db = require('../config/db');
+const fail = (res, s, m) => res.status(s).json({ success: false, message: m });
+const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: true, ...meta, data });
 
-/* ─── constants ─────────────────────────────────────────────────────────── */
-
-const STATUS_ALIASES = {
-  p: 'p', present: 'p',
-  l: 'l', late:    'l',
-  a: 'a', absent:  'a',
-  e: 'e', excused: 'e',
-};
-
-const STATUS_LABELS = { p: 'Present', l: 'Late', a: 'Absent', e: 'Excused' };
-
-const ATT_BEHAVIORS = [
-  'Attentiveness', 'Punctuality', 'Neatness', 'Politeness',
-  'Honesty', 'Creativity', 'Cooperation', 'Leadership',
-];
-
-const TERM_DATES = {
-  'First Term':  { start: '2025-08-08', end: '2025-11-12' },
-  'Second Term': { start: '2026-01-12', end: '2026-04-03' },
-  'Third Term':  { start: '2026-04-04', end: '2026-08-01' },
-};
-
-/* ─── helpers ────────────────────────────────────────────────────────────── */
-
-const fail = (res, status, msg, extra = {}) =>
-  res.status(status).json({ success: false, message: msg, ...extra });
-
-const ok = (res, data, meta = {}, status = 200) =>
-  res.status(status).json({ success: true, ...meta, data });
-
-/** 'p' | 'l' | 'a' | 'e' | null  — accepts full names and single letters */
-function normaliseStatus(raw) {
-  if (!raw) return null;
-  return STATUS_ALIASES[String(raw).toLowerCase()] || null;
+const VALID_STATUS = ['p','l','a','e','present','late','absent','excused'];
+function normalise(s) {
+  return ({ present:'p', late:'l', absent:'a', excused:'e' })[s?.toLowerCase()] || s;
 }
 
-function expandStatus(key) {
-  return STATUS_LABELS[String(key).toLowerCase()] || key;
-}
-
-/** True when the authenticated user can mark/edit attendance for cls/arm */
-function canMarkClass(user, cls, arm) {
-  if (user.role === 'Admin') return true;
-  return (
-    user.role === 'Teacher' &&
-    user.assignedClass === cls &&
-    (!user.assignedArm || user.assignedArm === arm)
-  );
-}
-
-function ensureCollection(key) {
-  if (!db[key]) db[key] = [];
-  return db[key];
-}
-
-/** All Mon–Fri ISO dates within a term (matches attGetSchoolDays) */
-function getSchoolDays(term) {
-  const range = TERM_DATES[term];
-  if (!range) return [];
-  const days = [];
-  const d    = new Date(range.start + 'T00:00:00');
-  const end  = new Date(range.end   + 'T00:00:00');
-  while (d <= end) {
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) days.push(d.toISOString().split('T')[0]);
-    d.setDate(d.getDate() + 1);
-  }
-  return days;
-}
-
-/**
- * Attendance % — Late counts as present, matching the frontend
- * attUpdateRowTotals denominator: p + a + l (excused is excluded).
- */
-function attendanceRate(records) {
-  if (!records.length) return null;
-  const present = records.filter(r => ['p', 'l'].includes((r.status || '').toLowerCase())).length;
-  return parseFloat((present / records.length * 100).toFixed(1));
-}
-
-function syncStudentAttendance(studentId, term, session) {
-  const student = db.findStudent(studentId);
-  if (!student) return;
-  const records = (db.attendance || []).filter(r =>
-    r.studentId === studentId && r.term === term && r.session === session
-  );
-  student.attendance = records.length ? attendanceRate(records) : 100;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/attendance
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getAll = (req, res) => {
-  const { studentId, class: cls, arm, date, term, session, status } = req.query;
-
-  if (req.user.role === 'Parent') {
-    let data = (db.attendance || []).filter(r => r.studentId === req.user.wardId);
-    if (term)    data = data.filter(r => r.term    === term);
-    if (session) data = data.filter(r => r.session === session);
-    return ok(res, data, { total: data.length });
-  }
-
-  let list = [...(db.attendance || [])];
-
-  if (req.user.role === 'Teacher') {
-    list = list.filter(r =>
-      r.class === req.user.assignedClass &&
-      (!req.user.assignedArm || r.arm === req.user.assignedArm)
-    );
-  }
-
-  if (studentId) list = list.filter(r => r.studentId === studentId);
-  if (cls)       list = list.filter(r => r.class     === cls);
-  if (arm)       list = list.filter(r => r.arm       === arm);
-  if (date)      list = list.filter(r => r.date      === date);
-  if (term)      list = list.filter(r => r.term      === term);
-  if (session)   list = list.filter(r => r.session   === session);
-  if (status) {
-    const norm = normaliseStatus(status);
-    if (norm) list = list.filter(r => (r.status || '').toLowerCase() === norm);
-  }
-
-  return ok(res, list, { total: list.length });
+exports.getAll = async (req, res) => {
+  try {
+    const { studentId, class: cls, arm, date, term, session, status } = req.query;
+    let sql = `SELECT a.*, s.name AS student_name, c.name AS class_name
+               FROM attendance a JOIN students s ON s.id=a.student_id
+               LEFT JOIN classes c ON c.id=a.class_id WHERE 1=1`;
+    const p = [];
+    if (studentId) { sql += ' AND a.student_id=?'; p.push(studentId); }
+    if (cls)       { sql += ' AND c.name=?';        p.push(cls); }
+    if (arm)       { sql += ' AND a.arm=?';         p.push(arm); }
+    if (date)      { sql += ' AND a.date=?';        p.push(date); }
+    if (term)      { sql += ' AND a.term=?';        p.push(term); }
+    if (session)   { sql += ' AND a.session=?';     p.push(session); }
+    if (status)    { sql += ' AND a.status=?';      p.push(normalise(status)); }
+    sql += ' ORDER BY a.date DESC, s.name LIMIT 1000';
+    const rows = await db.query(sql, p);
+    return ok(res, rows, { count: rows.length });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/attendance/school-days/:term
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getSchoolDays = (req, res) => {
-  const days = getSchoolDays(req.params.term);
-  if (!days.length)
-    return fail(res, 404, `Term "${req.params.term}" not found or has no school days configured.`);
-  return ok(res, days, { term: req.params.term, range: TERM_DATES[req.params.term], total: days.length });
-};
+exports.mark = async (req, res) => {
+  try {
+    const { studentId, class: cls, arm, date, term, session, status, remarks } = req.body ?? {};
+    if (!studentId || !date || !term || !session || !status)
+      return fail(res, 400, 'studentId, date, term, session, status are required.');
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/attendance/summary/:studentId
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getSummary = (req, res) => {
-  const { studentId }     = req.params;
-  const { term, session } = req.query;
+    const st = normalise(status);
+    if (!['p','l','a','e'].includes(st)) return fail(res, 400, `Invalid status "${status}".`);
 
-  if (req.user.role === 'Parent' && req.user.wardId !== studentId)
-    return fail(res, 403, 'Access denied.');
+    const student = await db.query1('SELECT id, class_id FROM students WHERE id=?', [studentId]);
+    if (!student) return fail(res, 404, 'Student not found.');
 
-  const student = db.findStudent(studentId);
-  if (!student) return fail(res, 404, `Student "${studentId}" not found.`);
+    const clsRow = cls ? await db.query1('SELECT id FROM classes WHERE name=?', [cls]) : null;
+    const classId = clsRow?.id || student.class_id;
 
-  if (req.user.role === 'Teacher' && !canMarkClass(req.user, student.class, student.arm))
-    return fail(res, 403, 'Access denied.');
-
-  let records = (db.attendance || []).filter(r => r.studentId === studentId);
-  if (term)    records = records.filter(r => r.term    === term);
-  if (session) records = records.filter(r => r.session === session);
-
-  const total   = records.length;
-  const present = records.filter(r => (r.status || '').toLowerCase() === 'p').length;
-  const absent  = records.filter(r => (r.status || '').toLowerCase() === 'a').length;
-  const late    = records.filter(r => (r.status || '').toLowerCase() === 'l').length;
-  const excused = records.filter(r => (r.status || '').toLowerCase() === 'e').length;
-
-  return ok(res, {
-    student,
-    term:    term    || 'All',
-    session: session || 'All',
-    summary: { total, present, absent, late, excused, attendanceRate: total ? attendanceRate(records) : null },
-    records,
-  });
-};
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/attendance/class-summary
-   Query: class*, arm*, term*, session*
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getClassSummary = (req, res) => {
-  const { class: cls, arm, term, session } = req.query;
-  if (!cls || !arm || !term || !session)
-    return fail(res, 400, 'class, arm, term, and session are all required.');
-
-  if (!canMarkClass(req.user, cls, arm)) return fail(res, 403, 'Access denied.');
-
-  const students = (db.students || []).filter(s => s.class === cls && s.arm === arm && s.active !== false);
-  if (!students.length) return fail(res, 404, `No students found in ${cls} ${arm}.`);
-
-  const schoolDayCount = getSchoolDays(term).length;
-
-  const rows = students.map(s => {
-    const records = (db.attendance || []).filter(r =>
-      r.studentId === s.id && r.class === cls && r.arm === arm &&
-      r.term === term && r.session === session
-    );
-    const p   = records.filter(r => (r.status || '').toLowerCase() === 'p').length;
-    const a   = records.filter(r => (r.status || '').toLowerCase() === 'a').length;
-    const l   = records.filter(r => (r.status || '').toLowerCase() === 'l').length;
-    const e   = records.filter(r => (r.status || '').toLowerCase() === 'e').length;
-    const pct = p + a + l ? Math.round(p / (p + a + l) * 100) : 100;
-    return {
-      studentId: s.id, name: s.name,
-      present: p, absent: a, late: l, excused: e,
-      attendancePct: pct,
-      flag:   pct < 75 ? 'Below 75%' : null,
-      status: pct >= 90 ? 'Excellent' : pct >= 75 ? 'Satisfactory' : 'Needs Attention',
-    };
-  });
-
-  const avg   = (arr, key) => Math.round(arr.reduce((s, r) => s + r[key], 0) / arr.length);
-  return ok(res, rows, {
-    class: cls, arm, term, session, schoolDayCount,
-    classStats: {
-      avgPct: avg(rows, 'attendancePct'),
-      avgPresent: avg(rows, 'present'),
-      avgAbsent:  avg(rows, 'absent'),
-      belowThreshold: rows.filter(r => r.attendancePct < 75).length,
-    },
-  });
-};
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   POST /api/attendance  — single-student single-day mark
-   Body: { studentId, class, arm, date, term, session, status, remarks? }
-═══════════════════════════════════════════════════════════════════════════ */
-exports.mark = (req, res) => {
-  const { studentId, class: cls, arm, date, term, session, remarks } = req.body;
-  const statusKey = normaliseStatus(req.body.status);
-
-  const missing = ['studentId', 'class', 'arm', 'date', 'term', 'session']
-    .filter(f => !req.body[f]);
-  if (!req.body.status) missing.push('status');
-  if (missing.length) return fail(res, 400, `Missing required fields: ${missing.join(', ')}.`);
-  if (!statusKey) return fail(res, 400, 'Invalid status. Accepted: p, l, a, e (or Present, Late, Absent, Excused).');
-  if (!canMarkClass(req.user, cls, arm)) return fail(res, 403, 'You can only mark attendance for your assigned class.');
-  if (!db.findStudent(studentId)) return fail(res, 404, `Student "${studentId}" not found.`);
-
-  const attendance = ensureCollection('attendance');
-  const existing   = attendance.find(r =>
-    r.studentId === studentId && r.date === date &&
-    r.class === cls && r.arm === arm && r.session === session
-  );
-
-  if (existing) {
-    existing.status   = statusKey;
-    existing.remarks  = remarks ?? existing.remarks;
-    existing.markedBy = req.user.id || req.user.name;
-    existing.savedAt  = new Date().toISOString();
-    syncStudentAttendance(studentId, term, session);
-    return ok(res, { ...existing, statusLabel: expandStatus(statusKey) }, { updated: true });
-  }
-
-  const record = {
-    id:        db.nextId ? db.nextId() : Date.now(),
-    studentId, class: cls, arm, date, term, session,
-    status:    statusKey,
-    markedBy:  req.user.id || req.user.name,
-    remarks:   remarks || '',
-    savedAt:   new Date().toISOString(),
-  };
-  attendance.push(record);
-  syncStudentAttendance(studentId, term, session);
-  return ok(res, { ...record, statusLabel: expandStatus(statusKey) }, { updated: false }, 201);
-};
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   POST /api/attendance/bulk
-   Body: { class, arm, date, term, session, records: [{ studentId, status?, remarks? }] }
-   status defaults to 'p' when omitted — matches attMarkAllToday('P').
-═══════════════════════════════════════════════════════════════════════════ */
-exports.bulkMark = (req, res) => {
-  const { class: cls, arm, date, term, session, records } = req.body;
-
-  if (!cls || !arm || !date || !term || !session)
-    return fail(res, 400, 'class, arm, date, term, and session are required.');
-  if (!Array.isArray(records) || !records.length)
-    return fail(res, 400, 'records must be a non-empty array.');
-  if (!canMarkClass(req.user, cls, arm))
-    return fail(res, 403, 'You can only mark attendance for your assigned class.');
-
-  const attendance = ensureCollection('attendance');
-  const saved = [], errors = [];
-
-  records.forEach((row, i) => {
-    const label     = `Row ${i + 1}`;
-    const { studentId, remarks } = row;
-    const statusKey = normaliseStatus(row.status || 'p');  // default Present
-
-    if (!studentId) { errors.push({ row: label, reason: 'studentId is required.' }); return; }
-    if (!statusKey) { errors.push({ row: label, reason: `Invalid status "${row.status}".` }); return; }
-    if (!db.findStudent(studentId)) { errors.push({ row: label, reason: `Student "${studentId}" not found.` }); return; }
-
-    const existing = attendance.find(r =>
-      r.studentId === studentId && r.date === date &&
-      r.class === cls && r.arm === arm && r.session === session
+    await db.run(
+      `INSERT INTO attendance (student_id, class_id, arm, date, term, session, status, remarks)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE status=VALUES(status), remarks=VALUES(remarks)`,
+      [studentId, classId, arm || null, date, term, session, st, remarks || null]
     );
 
-    if (existing) {
-      existing.status   = statusKey;
-      existing.remarks  = remarks ?? existing.remarks;
-      existing.markedBy = req.user.id || req.user.name;
-      existing.savedAt  = new Date().toISOString();
-      saved.push({ ...existing, statusLabel: expandStatus(statusKey), updated: true });
-    } else {
-      const record = {
-        id:       db.nextId ? db.nextId() : Date.now() + i,
-        studentId, class: cls, arm, date, term, session,
-        status:   statusKey,
-        markedBy: req.user.id || req.user.name,
-        remarks:  remarks || '',
-        savedAt:  new Date().toISOString(),
-      };
-      attendance.push(record);
-      saved.push({ ...record, statusLabel: expandStatus(statusKey), updated: false });
+    // Update student attendance percentage
+    const [tot, pres] = await Promise.all([
+      db.query1('SELECT COUNT(*) AS n FROM attendance WHERE student_id=? AND term=? AND session=?', [studentId, term, session]),
+      db.query1("SELECT COUNT(*) AS n FROM attendance WHERE student_id=? AND term=? AND session=? AND status IN ('p','l')", [studentId, term, session]),
+    ]);
+    const pct = Number(tot?.n) > 0 ? parseFloat((Number(pres?.n) / Number(tot?.n) * 100).toFixed(1)) : 100;
+    await db.run('UPDATE students SET attendance=? WHERE id=?', [pct, studentId]);
+    const cached = db.findStudent(studentId);
+    if (cached) cached.attendance = pct;
+
+    const saved = await db.query1('SELECT * FROM attendance WHERE student_id=? AND date=? AND session=?', [studentId, date, session]);
+    return ok(res, saved, {}, 201);
+  } catch (e) { return fail(res, 500, e.message); }
+};
+
+exports.bulkMark = async (req, res) => {
+  try {
+    const { class: cls, arm, date, term, session, records = [] } = req.body ?? {};
+    if (!date || !term || !session || !records.length)
+      return fail(res, 400, 'date, term, session, and records[] are required.');
+
+    const clsRow = cls ? await db.query1('SELECT id FROM classes WHERE name=?', [cls]) : null;
+    let saved = 0, skipped = 0;
+
+    for (const r of records) {
+      const studentId = r.student_id || r.studentId;
+      const st = normalise(r.status);
+      if (!studentId || !['p','l','a','e'].includes(st)) { skipped++; continue; }
+
+      const student = await db.query1('SELECT id, class_id FROM students WHERE id=?', [studentId]);
+      if (!student) { skipped++; continue; }
+
+      const classId = clsRow?.id || student.class_id;
+      try {
+        await db.run(
+          `INSERT INTO attendance (student_id, class_id, arm, date, term, session, status, remarks)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE status=VALUES(status)`,
+          [studentId, classId, arm || null, date, term, session, st, r.remarks || null]
+        );
+        saved++;
+      } catch { skipped++; }
     }
-  });
 
-  [...new Set(saved.map(r => r.studentId))].forEach(id =>
-    syncStudentAttendance(id, term, session)
-  );
-
-  return res.status(saved.length ? 207 : 400).json({
-    success: saved.length > 0,
-    saved:   saved.length,
-    errors:  errors.length,
-    data:    saved,
-    issues:  errors,
-  });
-};
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   PUT /api/attendance/:id
-═══════════════════════════════════════════════════════════════════════════ */
-exports.update = (req, res) => {
-  const attendance = ensureCollection('attendance');
-  const idx        = attendance.findIndex(r => r.id === Number(req.params.id));
-  if (idx < 0) return fail(res, 404, 'Attendance record not found.');
-
-  const record = attendance[idx];
-  if (!canMarkClass(req.user, record.class, record.arm))
-    return fail(res, 403, 'You can only edit attendance for your assigned class.');
-
-  let statusKey = record.status;
-  if (req.body.status !== undefined) {
-    statusKey = normaliseStatus(req.body.status);
-    if (!statusKey) return fail(res, 400, 'Invalid status. Use p/l/a/e or full names.');
-  }
-
-  const { id: _id, studentId: _sid, class: _cls, arm: _arm, date: _date, ...safeUpdates } = req.body;
-  attendance[idx] = { ...record, ...safeUpdates, status: statusKey, id: record.id, savedAt: new Date().toISOString() };
-
-  syncStudentAttendance(record.studentId, record.term, record.session);
-  return ok(res, { ...attendance[idx], statusLabel: expandStatus(statusKey) });
-};
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   DELETE /api/attendance/:id
-═══════════════════════════════════════════════════════════════════════════ */
-exports.remove = (req, res) => {
-  const attendance = ensureCollection('attendance');
-  const idx        = attendance.findIndex(r => r.id === Number(req.params.id));
-  if (idx < 0) return fail(res, 404, 'Attendance record not found.');
-
-  const [removed] = attendance.splice(idx, 1);
-  syncStudentAttendance(removed.studentId, removed.term, removed.session);
-  return ok(res, removed, { message: 'Attendance record deleted.' });
-};
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/attendance/export
-   Query: class*, arm*, term*, session*
-   CSV matching attExportCSV() column order.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.exportAttendance = (req, res) => {
-  const { class: cls, arm, term, session } = req.query;
-  if (!cls || !arm || !term || !session)
-    return fail(res, 400, 'class, arm, term, and session are required.');
-  if (!canMarkClass(req.user, cls, arm)) return fail(res, 403, 'Access denied.');
-
-  const students  = (db.students || []).filter(s => s.class === cls && s.arm === arm && s.active !== false);
-  const schoolDays = getSchoolDays(term);
-  const headers   = ['Student ID', 'Student Name', ...schoolDays, 'Present', 'Absent', 'Late', 'Excused', '%'];
-
-  const rows = students.map(s => {
-    const perDay = schoolDays.map(d => {
-      const r = (db.attendance || []).find(x =>
-        x.studentId === s.id && x.date === d && x.class === cls && x.session === session
-      );
-      return (r?.status || 'p').toUpperCase();
-    });
-    const p = perDay.filter(v => v === 'P').length;
-    const a = perDay.filter(v => v === 'A').length;
-    const l = perDay.filter(v => v === 'L').length;
-    const e = perDay.filter(v => v === 'E').length;
-    return [s.id, s.name, ...perDay, p, a, l, e, `${Math.round(p / (p + a + l || 1) * 100)}%`];
-  });
-
-  const csv = [headers, ...rows]
-    .map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))
-    .join('\r\n');
-
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition',
-    `attachment; filename="attendance_${cls}_${arm}_${term.replace(/ /g, '_')}.csv"`);
-  return res.send('\uFEFF' + csv);
-};
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   DOMAIN ASSESSMENTS
-═══════════════════════════════════════════════════════════════════════════ */
-
-exports.getClassDomains = (req, res) => {
-  const { class: cls, arm, term, session } = req.query;
-  if (!cls || !arm || !term || !session)
-    return fail(res, 400, 'class, arm, term, and session are required.');
-  if (!canMarkClass(req.user, cls, arm)) return fail(res, 403, 'Access denied.');
-
-  const students = (db.students || []).filter(s => s.class === cls && s.arm === arm && s.active !== false);
-  const domains  = ensureCollection('domainAssessments');
-
-  const data = students.map(s => {
-    const entry = domains.find(d => d.studentId === s.id && d.term === term && d.session === session) || {};
-    return { studentId: s.id, name: s.name, ...entry };
-  });
-
-  return ok(res, data, { class: cls, arm, term, session });
-};
-
-exports.setStudentDomains = (req, res) => {
-  const { studentId }     = req.params;
-  const { term, session } = req.query;
-
-  if (!term || !session)
-    return fail(res, 400, 'term and session query params are required.');
-
-  const student = db.findStudent(studentId);
-  if (!student) return fail(res, 404, `Student "${studentId}" not found.`);
-  if (!canMarkClass(req.user, student.class, student.arm))
-    return fail(res, 403, 'You can only set domain scores for your assigned class/arm.');
-
-  const DOMAIN_FIELDS = ['cognitive', 'affective', 'psychomotor',
-    ...ATT_BEHAVIORS.map((_, i) => `behavior_${i}`)];
-
-  // Validate 1–5 range
-  for (const field of DOMAIN_FIELDS) {
-    if (req.body[field] == null || req.body[field] === '') continue;
-    const n = Number(req.body[field]);
-    if (isNaN(n) || n < 1 || n > 5)
-      return fail(res, 400, `${field} must be between 1 and 5.`);
-  }
-
-  for (const key of Object.keys(req.body)) {
-    if (!key.startsWith('behavior_')) continue;
-    const idx = parseInt(key.split('_')[1], 10);
-    if (isNaN(idx) || idx < 0 || idx >= ATT_BEHAVIORS.length)
-      return fail(res, 400, `Unknown behavior key "${key}". Expected behavior_0 to behavior_${ATT_BEHAVIORS.length - 1}.`);
-  }
-
-  const domains  = ensureCollection('domainAssessments');
-  const existing = domains.find(d => d.studentId === studentId && d.term === term && d.session === session);
-
-  const updates = {};
-  for (const field of DOMAIN_FIELDS) {
-    if (req.body[field] !== undefined) {
-      updates[field] = (req.body[field] === '' || req.body[field] === null) ? null : Number(req.body[field]);
+    // Sync attendance % for all students in the batch
+    const studentIds = [...new Set(records.map(r => r.student_id || r.studentId).filter(Boolean))];
+    for (const sid of studentIds) {
+      const [tot, pres] = await Promise.all([
+        db.query1('SELECT COUNT(*) AS n FROM attendance WHERE student_id=? AND term=? AND session=?', [sid, term, session]),
+        db.query1("SELECT COUNT(*) AS n FROM attendance WHERE student_id=? AND term=? AND session=? AND status IN ('p','l')", [sid, term, session]),
+      ]);
+      const pct = Number(tot?.n) > 0 ? parseFloat((Number(pres?.n) / Number(tot?.n) * 100).toFixed(1)) : 100;
+      await db.run('UPDATE students SET attendance=? WHERE id=?', [pct, sid]);
+      const cached = db.findStudent(sid);
+      if (cached) cached.attendance = pct;
     }
-  }
 
-  if (existing) {
-    Object.assign(existing, updates);
-    return ok(res, existing);
-  }
+    return ok(res, { saved, skipped, date, term, session });
+  } catch (e) { return fail(res, 500, e.message); }
+};
 
-  const entry = { studentId, term, session, ...updates };
-  domains.push(entry);
-  return ok(res, entry, {}, 201);
+exports.update = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, remarks } = req.body ?? {};
+    const row = await db.query1('SELECT * FROM attendance WHERE id=?', [id]);
+    if (!row) return fail(res, 404, 'Attendance record not found.');
+
+    const st = status ? normalise(status) : row.status;
+    if (!['p','l','a','e'].includes(st)) return fail(res, 400, 'Invalid status.');
+
+    await db.run('UPDATE attendance SET status=?, remarks=? WHERE id=?',
+      [st, remarks ?? row.remarks, id]);
+    return ok(res, { ...row, status: st, remarks: remarks ?? row.remarks });
+  } catch (e) { return fail(res, 500, e.message); }
+};
+
+exports.remove = async (req, res) => {
+  try {
+    const row = await db.query1('SELECT id FROM attendance WHERE id=?', [req.params.id]);
+    if (!row) return fail(res, 404, 'Attendance record not found.');
+    await db.run('DELETE FROM attendance WHERE id=?', [req.params.id]);
+    return ok(res, { id: Number(req.params.id), deleted: true });
+  } catch (e) { return fail(res, 500, e.message); }
+};
+
+exports.getSummary = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { term, session } = req.query;
+    const rows = await db.query(
+      'SELECT status, COUNT(*) AS n FROM attendance WHERE student_id=? AND term=? AND session=? GROUP BY status',
+      [studentId, term, session]);
+    const counts = { p: 0, l: 0, a: 0, e: 0 };
+    rows.forEach(r => { counts[r.status] = Number(r.n); });
+    const total   = counts.p + counts.a + counts.l;
+    const present = counts.p + counts.l;
+    const pct     = total > 0 ? parseFloat((present / total * 100).toFixed(1)) : 100;
+    return ok(res, { studentId, term, session, ...counts, total, attendancePct: pct });
+  } catch (e) { return fail(res, 500, e.message); }
+};
+
+exports.getClassSummary = async (req, res) => {
+  try {
+    const { class: cls, arm, term, session } = req.query;
+    if (!cls || !term || !session) return fail(res, 400, 'class, term, session required.');
+    const clsRow = await db.query1('SELECT id FROM classes WHERE name=?', [cls]);
+    if (!clsRow) return fail(res, 404, 'Class not found.');
+
+    const rows = await db.query(
+      `SELECT s.id AS student_id, s.name,
+        SUM(a.status='p') AS present, SUM(a.status='a') AS absent,
+        SUM(a.status='l') AS late, SUM(a.status='e') AS excused,
+        CASE WHEN SUM(a.status IN ('p','a','l'))=0 THEN 100
+             ELSE ROUND(SUM(a.status='p')/SUM(a.status IN ('p','a','l'))*100)
+        END AS attendance_pct
+       FROM students s
+       LEFT JOIN attendance a ON a.student_id=s.id AND a.class_id=? AND a.term=? AND a.session=?
+       ${arm ? 'AND a.arm=?' : ''}
+       WHERE s.class_id=? ${arm ? 'AND s.arm=?' : ''} AND s.active=1
+       GROUP BY s.id, s.name ORDER BY s.name`,
+      arm ? [clsRow.id, term, session, arm, clsRow.id, arm] : [clsRow.id, term, session, clsRow.id]
+    );
+    return ok(res, rows, { count: rows.length });
+  } catch (e) { return fail(res, 500, e.message); }
+};
+
+exports.getClassDomains = async (req, res) => {
+  try {
+    const { class: cls, arm, term, session } = req.query;
+    if (!term || !session) return fail(res, 400, 'term and session required.');
+    const clsRow = cls ? await db.query1('SELECT id FROM classes WHERE name=?', [cls]) : null;
+
+    let sql = 'SELECT d.*, s.name AS student_name FROM domain_assessments d JOIN students s ON s.id=d.student_id WHERE d.term=? AND d.session=?';
+    const p = [term, session];
+    if (clsRow) { sql += ' AND s.class_id=?'; p.push(clsRow.id); }
+    if (arm)    { sql += ' AND s.arm=?';       p.push(arm); }
+    sql += ' ORDER BY s.name';
+
+    const rows = await db.query(sql, p);
+    return ok(res, rows, { count: rows.length });
+  } catch (e) { return fail(res, 500, e.message); }
+};
+
+exports.setStudentDomains = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { term, session } = req.query;
+    if (!term || !session) return fail(res, 400, 'term and session query params required.');
+
+    const student = await db.query1('SELECT id FROM students WHERE id=?', [studentId]);
+    if (!student) return fail(res, 404, 'Student not found.');
+
+    const fields = ['cognitive','affective','psychomotor',
+                    'behavior_0','behavior_1','behavior_2','behavior_3',
+                    'behavior_4','behavior_5','behavior_6','behavior_7'];
+
+    const values = fields.map(f => req.body[f] != null ? parseInt(req.body[f]) : null);
+
+    await db.run(
+      `INSERT INTO domain_assessments (student_id, term, session, ${fields.join(',')})
+       VALUES (?, ?, ?, ${fields.map(() => '?').join(',')})
+       ON DUPLICATE KEY UPDATE ${fields.map(f => `${f}=VALUES(${f})`).join(',')}`,
+      [studentId, term, session, ...values]
+    );
+
+    const saved = await db.query1('SELECT * FROM domain_assessments WHERE student_id=? AND term=? AND session=?', [studentId, term, session]);
+    return ok(res, saved);
+  } catch (e) { return fail(res, 500, e.message); }
+};
+
+exports.getSchoolDays = async (req, res) => {
+  try {
+    const { term } = req.params;
+    const settings = await db.getSettings();
+    const start = settings[`att_termStart`] || settings.resumption_date;
+    const end   = settings[`att_termEnd`];
+    if (!start || !end) return ok(res, [], { message: 'Term dates not configured.' });
+
+    const working = (settings.att_workingDays?.split(',') || ['Monday','Tuesday','Wednesday','Thursday','Friday']);
+    const special = new Set(
+      JSON.parse(settings.att_specialDays || '[]')
+        .filter(d => d.type !== 'event').map(d => d.date)
+    );
+
+    const days = [];
+    const cursor = new Date(start + 'T00:00');
+    const endDate = new Date(end + 'T00:00');
+    const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+    while (cursor <= endDate) {
+      const iso  = cursor.toISOString().substring(0, 10);
+      const name = DAY_NAMES[cursor.getDay()];
+      if (working.includes(name) && !special.has(iso)) days.push(iso);
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return ok(res, days, { count: days.length, term });
+  } catch (e) { return fail(res, 500, e.message); }
+};
+
+exports.exportAttendance = async (req, res) => {
+  try {
+    const { class: cls, arm, term, session } = req.query;
+    const clsRow = cls ? await db.query1('SELECT id FROM classes WHERE name=?', [cls]) : null;
+
+    let sql = `SELECT s.id, s.name, c.name AS class, s.arm,
+               SUM(a.status='p') AS present, SUM(a.status='l') AS late,
+               SUM(a.status='a') AS absent, SUM(a.status='e') AS excused,
+               s.attendance AS pct
+               FROM students s
+               LEFT JOIN classes c ON c.id=s.class_id
+               LEFT JOIN attendance a ON a.student_id=s.id AND a.term=? AND a.session=?
+               WHERE s.active=1`;
+    const p = [term, session];
+    if (clsRow) { sql += ' AND s.class_id=?'; p.push(clsRow.id); }
+    if (arm)    { sql += ' AND s.arm=?';       p.push(arm); }
+    sql += ' GROUP BY s.id, s.name ORDER BY c.name, s.arm, s.name';
+
+    const rows = await db.query(sql, p);
+    const lines = ['ID,Name,Class,Arm,Present,Late,Absent,Excused,Attendance%'];
+    rows.forEach(r => lines.push([r.id,r.name,r.class,r.arm,r.present,r.late,r.absent,r.excused,r.pct].join(',')));
+
+    res.setHeader('Content-Type','text/csv');
+    res.setHeader('Content-Disposition','attachment; filename="attendance.csv"');
+    return res.send(lines.join('\n'));
+  } catch (e) { return fail(res, 500, e.message); }
 };

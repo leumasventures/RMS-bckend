@@ -1,416 +1,179 @@
 'use strict';
-
-/**
- * feeController.js — Sacred Heart College (SAHARCO)
- *
- * Routes (wired in feeRoutes.js):
- *   GET    /api/fees                       getAll
- *   GET    /api/fees/summary               getSummary
- *   GET    /api/fees/student/:studentId    getByStudent
- *   GET    /api/fees/export/csv            exportCSV
- *   GET    /api/fees/:id                   getOne
- *   POST   /api/fees                       create
- *   PUT    /api/fees/:id                   update
- *   PATCH  /api/fees/:id/status            updateStatus
- *   DELETE /api/fees/:id                   remove
- *   GET    /api/fees/structure             getStructure
- *   POST   /api/fees/structure             addStructureItem
- *   PUT    /api/fees/structure/:id         updateStructureItem
- *   DELETE /api/fees/structure/:id         deleteStructureItem
- *
- * Field names match openFeePaymentModal() and exportFeesCSV() in script3.js,
- * and API.Fees.* method signatures in api.js.
- */
-
 const db = require('../config/db');
+const fail = (res, s, m) => res.status(s).json({ success: false, message: m });
+const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: true, ...meta, data });
 
-/* ─── constants ─────────────────────────────────────────────────────────── */
-
-const DEFAULT_FEE_STRUCTURE = [
-  { id: 1, label: 'Tuition Fee',      amount: 45000, level: 'All'    },
-  { id: 2, label: 'Development Levy', amount: 10000, level: 'All'    },
-  { id: 3, label: 'Exam Fee',         amount: 5000,  level: 'Senior' },
-  { id: 4, label: 'PTA Dues',         amount: 3000,  level: 'All'    },
-];
-
-// Matches status options in openFeePaymentModal + VALID_STATUSES in api.js
-const VALID_STATUSES = ['Paid', 'Partial', 'Unpaid', 'Waived', 'overdue'];
-const VALID_LEVELS   = ['All', 'Junior', 'Senior'];
-
-/* ─── helpers ────────────────────────────────────────────────────────────── */
-
-const fail = (res, status, msg, extra = {}) =>
-  res.status(status).json({ success: false, message: msg, ...extra });
-
-const ok = (res, data, meta = {}, status = 200) =>
-  res.status(status).json({ success: true, ...meta, data });
-
-function ensureStore(key, fallback) {
-  if (!db[key]) db[key] = typeof fallback === 'function' ? fallback() : fallback;
-  return db[key];
-}
-
-function nextFeeId() {
-  const fees = db.fees || [];
-  const max  = fees.reduce((m, f) => Math.max(m, parseInt((f.id || '0').replace(/\D/g, '')) || 0), 0);
-  return `FEE${max + 1}`;
-}
-
-function nextStructureId() {
-  const s = db.feeStructure || [];
-  return s.length ? Math.max(...s.map(f => f.id || 0)) + 1 : 1;
-}
-
-/**
- * Enrich a fee record with student name/class/arm.
- * Matches the shape rendered by renderFees() in script3.js.
- */
-function enrichFee(f) {
-  const s = (db.students || []).find(st => st.id === f.studentId);
-  return { ...f, studentName: s?.name || f.studentId, class: s?.class || '', arm: s?.arm || '' };
-}
-
-/**
- * Stat cards matching the summary strip at the top of renderFees().
- */
-function buildSummary(fees, students) {
-  const structure    = ensureStore('feeStructure', () => [...DEFAULT_FEE_STRUCTURE]);
-  const totalExpected = students.length * structure.reduce((a, f) => a + (f.amount || 0), 0);
-  const totalPaid     = fees.filter(f => f.status === 'Paid').reduce((a, f) => a + (f.amount || 0), 0);
-  const totalPartial  = fees.filter(f => f.status === 'Partial').reduce((a, f) => a + (f.amount || 0), 0);
-  const totalCollected = totalPaid + totalPartial;
-  return {
-    studentCount:    students.length,
-    totalExpected,
-    totalCollected,
-    totalPaid,
-    totalPartial,
-    outstanding:     Math.max(0, totalExpected - totalCollected),
-    paymentCount:    fees.length,
-    paidCount:       fees.filter(f => f.status === 'Paid').length,
-    partialCount:    fees.filter(f => f.status === 'Partial').length,
-  };
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   FEE STRUCTURE
-═══════════════════════════════════════════════════════════════════════════ */
-
-exports.getStructure = (req, res) => {
-  const structure = ensureStore('feeStructure', () => [...DEFAULT_FEE_STRUCTURE]);
-  return ok(res, structure, { total: structure.length });
+exports.getAll = async (req, res) => {
+  try {
+    const { studentId, class: cls, arm, term, session, status, feeType } = req.query;
+    let sql = `SELECT f.*, s.name AS student_name, c.name AS class_name
+               FROM fee_payments f JOIN students s ON s.id=f.student_id
+               LEFT JOIN classes c ON c.id=s.class_id WHERE 1=1`;
+    const p = [];
+    if (studentId) { sql += ' AND f.student_id=?'; p.push(studentId); }
+    if (cls)       { sql += ' AND c.name=?';        p.push(cls); }
+    if (arm)       { sql += ' AND s.arm=?';         p.push(arm); }
+    if (term)      { sql += ' AND f.term=?';        p.push(term); }
+    if (session)   { sql += ' AND f.session=?';     p.push(session); }
+    if (status)    { sql += ' AND f.status=?';      p.push(status); }
+    if (feeType)   { sql += ' AND f.fee_type=?';    p.push(feeType); }
+    sql += ' ORDER BY f.created_at DESC';
+    const rows = await db.query(sql, p);
+    return ok(res, rows, { count: rows.length });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-exports.addStructureItem = (req, res) => {
-  const { label, amount, level = 'All' } = req.body;
-  if (!label || amount === undefined) return fail(res, 400, 'label and amount are required.');
-
-  const amtNum = Number(amount);
-  if (isNaN(amtNum) || amtNum < 0) return fail(res, 400, 'amount must be a non-negative number.');
-  if (!VALID_LEVELS.includes(level)) return fail(res, 400, `level must be one of: ${VALID_LEVELS.join(', ')}.`);
-
-  const structure = ensureStore('feeStructure', () => [...DEFAULT_FEE_STRUCTURE]);
-  const trimLabel = String(label).trim();
-
-  if (structure.some(f => f.label.toLowerCase() === trimLabel.toLowerCase()))
-    return fail(res, 409, `Fee type "${trimLabel}" already exists.`);
-
-  const item = { id: nextStructureId(), label: trimLabel, amount: amtNum, level };
-  structure.push(item);
-  return ok(res, item, {}, 201);
+exports.getOne = async (req, res) => {
+  try {
+    const row = await db.query1('SELECT * FROM fee_payments WHERE id=?', [req.params.id]);
+    if (!row) return fail(res, 404, 'Payment record not found.');
+    return ok(res, row);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-exports.updateStructureItem = (req, res) => {
-  const structure = ensureStore('feeStructure', () => [...DEFAULT_FEE_STRUCTURE]);
-  const idx       = structure.findIndex(f => f.id === Number(req.params.id));
-  if (idx < 0) return fail(res, 404, 'Fee structure item not found.');
+exports.create = async (req, res) => {
+  try {
+    const { studentId, feeType, amount, date, term, session, status = 'Paid', reference, note } = req.body ?? {};
+    if (!studentId || !feeType || !amount || !date || !term)
+      return fail(res, 400, 'studentId, feeType, amount, date, term are required.');
 
-  const { label, amount, level } = req.body;
-  if (amount !== undefined) {
-    const n = Number(amount);
-    if (isNaN(n) || n < 0) return fail(res, 400, 'amount must be a non-negative number.');
-    structure[idx].amount = n;
-  }
-  if (label) structure[idx].label = String(label).trim();
-  if (level) {
-    if (!VALID_LEVELS.includes(level)) return fail(res, 400, `level must be one of: ${VALID_LEVELS.join(', ')}.`);
-    structure[idx].level = level;
-  }
-  return ok(res, structure[idx]);
-};
+    const student = await db.query1('SELECT id FROM students WHERE id=?', [studentId]);
+    if (!student) return fail(res, 404, 'Student not found.');
 
-exports.deleteStructureItem = (req, res) => {
-  const structure = ensureStore('feeStructure', () => [...DEFAULT_FEE_STRUCTURE]);
-  const idx       = structure.findIndex(f => f.id === Number(req.params.id));
-  if (idx < 0) return fail(res, 404, 'Fee structure item not found.');
-
-  const [removed] = structure.splice(idx, 1);
-  return ok(res, removed, { message: `"${removed.label}" removed.` });
-};
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/fees
-   Query: studentId, class, arm, term, session, status, feeType, page, limit
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getAll = (req, res) => {
-  const { studentId, class: cls, arm, term, session, status, feeType,
-          page = '1', limit = '100' } = req.query;
-
-  const fees     = ensureStore('fees', []);
-  const students = db.students || [];
-
-  // Parent — own ward only
-  if (req.user.role === 'Parent') {
-    const data = fees
-      .filter(f => f.studentId === req.user.wardId)
-      .map(enrichFee);
-    return ok(res, data, { total: data.length });
-  }
-
-  let list = [...fees];
-
-  // Teacher — their class/arm students only
-  if (req.user.role === 'Teacher') {
-    const classStudentIds = new Set(
-      students.filter(s => s.class === req.user.assignedClass &&
-                           (!req.user.assignedArm || s.arm === req.user.assignedArm))
-              .map(s => s.id)
+    const id = `FEE${Date.now()}`;
+    await db.run(
+      `INSERT INTO fee_payments (id, student_id, fee_type, amount, payment_date, term, session, status, reference, note, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, studentId, feeType, parseFloat(amount), date, term, session || null, status, reference || null, note || null, req.user?.name || null]
     );
-    list = list.filter(f => classStudentIds.has(f.studentId));
-  }
-
-  if (studentId) list = list.filter(f => f.studentId === studentId);
-  if (term)      list = list.filter(f => f.term      === term);
-  if (session)   list = list.filter(f => f.session   === session);
-  if (feeType)   list = list.filter(f => f.feeType   === feeType);
-  if (status) {
-    // Handle api.js status values: 'unpaid'|'partial'|'paid'|'overdue'
-    const normStatus = { unpaid: 'Unpaid', partial: 'Partial', paid: 'Paid', overdue: 'overdue' }[status.toLowerCase()] || status;
-    list = list.filter(f => f.status === normStatus);
-  }
-
-  if (cls || arm) {
-    list = list.filter(f => {
-      const s = students.find(st => st.id === f.studentId);
-      return (!cls || s?.class === cls) && (!arm || s?.arm === arm);
-    });
-  }
-
-  const total    = list.length;
-  const pageNum  = Math.max(1, parseInt(page,  10) || 1);
-  const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 100));
-
-  return ok(res, list.slice((pageNum - 1) * limitNum, pageNum * limitNum).map(enrichFee), {
-    total, page: pageNum, limit: limitNum,
-    totalPages: Math.ceil(total / limitNum),
-  });
+    const saved = await db.query1('SELECT * FROM fee_payments WHERE id=?', [id]);
+    return ok(res, saved, {}, 201);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/fees/summary
-   Query: term, session
-   Returns stat cards matching renderFees() header strip.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getSummary = (req, res) => {
-  if (req.user.role === 'Parent') return fail(res, 403, 'Access denied.');
+exports.update = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = await db.query1('SELECT * FROM fee_payments WHERE id=?', [id]);
+    if (!row) return fail(res, 404, 'Payment not found.');
 
-  const { term, session } = req.query;
-  let fees = ensureStore('fees', []);
-  if (term)    fees = fees.filter(f => f.term    === term);
-  if (session) fees = fees.filter(f => f.session === session);
-
-  return ok(res, buildSummary(fees, db.students || []), { term: term || 'All', session: session || 'All' });
+    const { feeType, amount, date, term, session, status, reference, note } = req.body ?? {};
+    await db.run(
+      `UPDATE fee_payments SET fee_type=?, amount=?, payment_date=?, term=?, session=?, status=?, reference=?, note=? WHERE id=?`,
+      [feeType||row.fee_type, amount||row.amount, date||row.payment_date, term||row.term,
+       session||row.session, status||row.status, reference||row.reference, note||row.note, id]
+    );
+    return ok(res, { ...row, ...req.body });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/fees/student/:studentId
-   Query: term, session
-   Matches API.Fees.getPayments({ studentId }) in api.js.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getByStudent = (req, res) => {
-  const { studentId }     = req.params;
-  const { term, session } = req.query;
-
-  if (req.user.role === 'Parent' && req.user.wardId !== studentId)
-    return fail(res, 403, 'Access denied.');
-
-  const student = db.findStudent(studentId);
-  if (!student) return fail(res, 404, `Student "${studentId}" not found.`);
-
-  if (req.user.role === 'Teacher' &&
-      !(req.user.assignedClass === student.class && (!req.user.assignedArm || req.user.assignedArm === student.arm)))
-    return fail(res, 403, 'Access denied.');
-
-  let records = (db.fees || []).filter(f => f.studentId === studentId);
-  if (term)    records = records.filter(f => f.term    === term);
-  if (session) records = records.filter(f => f.session === session);
-
-  const structure      = ensureStore('feeStructure', () => [...DEFAULT_FEE_STRUCTURE]);
-  const totalDue       = structure.reduce((a, f) => a + f.amount, 0);
-  const totalPaid      = records.filter(f => f.status === 'Paid').reduce((a, f) => a + f.amount, 0);
-  const totalPartial   = records.filter(f => f.status === 'Partial').reduce((a, f) => a + f.amount, 0);
-  const totalCollected = totalPaid + totalPartial;
-
-  return ok(res, {
-    student,
-    records: records.map(enrichFee),
-    summary: {
-      totalDue,
-      totalCollected,
-      outstanding: Math.max(0, totalDue - totalCollected),
-      fullyPaid:   totalCollected >= totalDue,
-    },
-  });
+exports.updateStatus = async (req, res) => {
+  try {
+    const { status } = req.body ?? {};
+    if (!['Paid','Partial','Unpaid','Waived','overdue'].includes(status)) return fail(res, 400, 'Invalid status.');
+    const row = await db.query1('SELECT id FROM fee_payments WHERE id=?', [req.params.id]);
+    if (!row) return fail(res, 404, 'Payment not found.');
+    await db.run('UPDATE fee_payments SET status=? WHERE id=?', [status, req.params.id]);
+    return ok(res, { id: req.params.id, status });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/fees/:id
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getOne = (req, res) => {
-  const fees = ensureStore('fees', []);
-  const fee  = fees.find(f => f.id === req.params.id);
-  if (!fee) return fail(res, 404, `Fee record "${req.params.id}" not found.`);
-  if (req.user.role === 'Parent' && fee.studentId !== req.user.wardId)
-    return fail(res, 403, 'Access denied.');
-  return ok(res, enrichFee(fee));
+exports.remove = async (req, res) => {
+  try {
+    const row = await db.query1('SELECT id FROM fee_payments WHERE id=?', [req.params.id]);
+    if (!row) return fail(res, 404, 'Payment not found.');
+    await db.run('DELETE FROM fee_payments WHERE id=?', [req.params.id]);
+    return ok(res, { id: req.params.id, deleted: true });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   POST /api/fees
-   Body: { studentId*, feeType*, amount*, date*, term*, status?, session? }
-   Matches fee-form onsubmit in openFeePaymentModal() and
-   API.Fees.recordPayment() in api.js.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.create = (req, res) => {
-  const { studentId, feeType, amount, date, term, session,
-          status = 'Paid', reference, note } = req.body;
-
-  const missing = ['studentId', 'feeType', 'amount', 'date', 'term']
-    .filter(f => req.body[f] === undefined || req.body[f] === '');
-  if (missing.length) return fail(res, 400, `Missing required fields: ${missing.join(', ')}.`);
-
-  const amtNum = Number(amount);
-  if (isNaN(amtNum) || amtNum <= 0) return fail(res, 400, 'amount must be a positive number.');
-
-  // Normalise status — api.js sends lowercase
-  const normStatus = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', waived: 'Waived' }[String(status).toLowerCase()] || status;
-  if (!VALID_STATUSES.map(s => s.toLowerCase()).includes(normStatus.toLowerCase()))
-    return fail(res, 400, `status must be one of: ${VALID_STATUSES.join(', ')}.`);
-
-  if (!db.findStudent(studentId))
-    return fail(res, 404, `Student "${studentId}" not found.`);
-
-  const fees   = ensureStore('fees', []);
-  const record = {
-    id:         nextFeeId(),
-    studentId,
-    feeType:    String(feeType).trim(),
-    amount:     amtNum,
-    date,
-    term,
-    session:    session || db.schoolInfo?.session || db.schoolInfo?.current_session || '',
-    status:     normStatus,
-    reference:  reference || '',
-    note:       note      || '',
-    createdBy:  req.user.name || req.user.id || 'System',
-    createdAt:  new Date().toISOString(),
-  };
-
-  fees.push(record);
-  return ok(res, enrichFee(record), {}, 201);
+exports.getStructure = async (req, res) => {
+  try {
+    const rows = await db.query('SELECT * FROM fee_structure ORDER BY id');
+    return ok(res, rows);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   PUT /api/fees/:id
-═══════════════════════════════════════════════════════════════════════════ */
-exports.update = (req, res) => {
-  const fees = ensureStore('fees', []);
-  const idx  = fees.findIndex(f => f.id === req.params.id);
-  if (idx < 0) return fail(res, 404, 'Fee record not found.');
-
-  if (req.body.amount !== undefined) {
-    const n = Number(req.body.amount);
-    if (isNaN(n) || n <= 0) return fail(res, 400, 'amount must be a positive number.');
-  }
-  if (req.body.status) {
-    const norm = { paid:'Paid', partial:'Partial', unpaid:'Unpaid', waived:'Waived' }[String(req.body.status).toLowerCase()] || req.body.status;
-    if (!VALID_STATUSES.map(s => s.toLowerCase()).includes(norm.toLowerCase()))
-      return fail(res, 400, `status must be one of: ${VALID_STATUSES.join(', ')}.`);
-    req.body.status = norm;
-  }
-
-  const { id: _id, studentId: _sid, createdBy: _cb, createdAt: _ca, ...updates } = req.body;
-  if (updates.amount) updates.amount = Number(updates.amount);
-
-  fees[idx] = { ...fees[idx], ...updates, updatedAt: new Date().toISOString() };
-  return ok(res, enrichFee(fees[idx]));
+exports.addStructureItem = async (req, res) => {
+  try {
+    const { label, amount, level = 'All' } = req.body ?? {};
+    if (!label || !amount) return fail(res, 400, 'label and amount required.');
+    const result = await db.run('INSERT INTO fee_structure (label, amount, level) VALUES (?, ?, ?)', [label, parseFloat(amount), level]);
+    const item = { id: result.insertId, label, amount: parseFloat(amount), level };
+    db.feeStructure.push(item);
+    return ok(res, item, {}, 201);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   PATCH /api/fees/:id/status
-   Matches API.Fees.verifyPayment() (marks as confirmed/paid).
-═══════════════════════════════════════════════════════════════════════════ */
-exports.updateStatus = (req, res) => {
-  const { status } = req.body;
-  if (!status) return fail(res, 400, 'status is required.');
-
-  const norm = { paid:'Paid', partial:'Partial', unpaid:'Unpaid', waived:'Waived' }[String(status).toLowerCase()] || status;
-  if (!VALID_STATUSES.map(s => s.toLowerCase()).includes(norm.toLowerCase()))
-    return fail(res, 400, `status must be one of: ${VALID_STATUSES.join(', ')}.`);
-
-  const fees = ensureStore('fees', []);
-  const idx  = fees.findIndex(f => f.id === req.params.id);
-  if (idx < 0) return fail(res, 404, 'Fee record not found.');
-
-  fees[idx].status    = norm;
-  fees[idx].updatedAt = new Date().toISOString();
-  return ok(res, enrichFee(fees[idx]));
+exports.updateStructureItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = await db.query1('SELECT * FROM fee_structure WHERE id=?', [id]);
+    if (!row) return fail(res, 404, 'Fee structure item not found.');
+    const label  = req.body.label  || row.label;
+    const amount = req.body.amount != null ? parseFloat(req.body.amount) : parseFloat(row.amount);
+    const level  = req.body.level  || row.level;
+    await db.run('UPDATE fee_structure SET label=?, amount=?, level=? WHERE id=?', [label, amount, level, id]);
+    const cached = db.feeStructure.find(f => f.id === Number(id));
+    if (cached) Object.assign(cached, { label, amount, level });
+    return ok(res, { id: Number(id), label, amount, level });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   DELETE /api/fees/:id
-   Matches API.Fees.reversePayment() in api.js.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.remove = (req, res) => {
-  const fees = ensureStore('fees', []);
-  const idx  = fees.findIndex(f => f.id === req.params.id);
-  if (idx < 0) return fail(res, 404, 'Fee record not found.');
-
-  const [removed] = fees.splice(idx, 1);
-  return ok(res, removed, { message: `Fee record "${removed.id}" deleted.` });
+exports.deleteStructureItem = async (req, res) => {
+  try {
+    const row = await db.query1('SELECT id FROM fee_structure WHERE id=?', [req.params.id]);
+    if (!row) return fail(res, 404, 'Fee structure item not found.');
+    await db.run('DELETE FROM fee_structure WHERE id=?', [req.params.id]);
+    db.feeStructure = db.feeStructure.filter(f => f.id !== Number(req.params.id));
+    return ok(res, { id: Number(req.params.id), deleted: true });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/fees/export/csv
-   Column order matches exportFeesCSV() in api-bridge.js exactly.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.exportCSV = (req, res) => {
-  if (req.user.role === 'Parent') return fail(res, 403, 'Access denied.');
+exports.getSummary = async (req, res) => {
+  try {
+    const { term, session } = req.query;
+    const rows = await db.query(
+      `SELECT fee_type, SUM(amount) AS collected, COUNT(*) AS count,
+       SUM(CASE WHEN status='Paid' THEN amount ELSE 0 END) AS paid,
+       SUM(CASE WHEN status='Unpaid' THEN amount ELSE 0 END) AS unpaid
+       FROM fee_payments WHERE 1=1${term?' AND term=?':''}${session?' AND session=?':''}
+       GROUP BY fee_type`,
+      [...(term?[term]:[]), ...(session?[session]:[])]
+    );
+    return ok(res, rows);
+  } catch (e) { return fail(res, 500, e.message); }
+};
 
-  const { term, session } = req.query;
-  let fees = ensureStore('fees', []);
-  if (term)    fees = fees.filter(f => f.term    === term);
-  if (session) fees = fees.filter(f => f.session === session);
+exports.getByStudent = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { term, session } = req.query;
+    const rows = await db.query(
+      `SELECT * FROM fee_payments WHERE student_id=?${term?' AND term=?':''}${session?' AND session=?':''}  ORDER BY created_at DESC`,
+      [studentId, ...(term?[term]:[]), ...(session?[session]:[])]
+    );
+    const total = rows.reduce((a, r) => a + parseFloat(r.amount), 0);
+    const paid  = rows.filter(r => r.status === 'Paid').reduce((a, r) => a + parseFloat(r.amount), 0);
+    return ok(res, rows, { total, paid, balance: total - paid });
+  } catch (e) { return fail(res, 500, e.message); }
+};
 
-  const students = db.students || [];
-  const rows     = [['Student', 'Class', 'Arm', 'Fee Type', 'Amount', 'Date', 'Term', 'Session', 'Status']];
-
-  fees.forEach(f => {
-    const s = students.find(st => st.id === f.studentId);
-    rows.push([
-      s?.name || f.studentId,
-      s?.class || '', s?.arm || '',
-      f.feeType, f.amount, f.date,
-      f.term, f.session || '', f.status,
-    ]);
-  });
-
-  const csv = rows
-    .map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
-    .join('\r\n');
-
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition',
-    `attachment; filename="fees_${term || 'all'}_${Date.now()}.csv"`);
-  return res.send('\uFEFF' + csv);
+exports.exportCSV = async (req, res) => {
+  try {
+    const { term, session } = req.query;
+    const rows = await db.query(
+      `SELECT f.*, s.name AS student_name, c.name AS class_name, s.arm
+       FROM fee_payments f JOIN students s ON s.id=f.student_id
+       LEFT JOIN classes c ON c.id=s.class_id
+       WHERE 1=1${term?' AND f.term=?':''}${session?' AND f.session=?':''}
+       ORDER BY s.name`,
+      [...(term?[term]:[]), ...(session?[session]:[])]
+    );
+    const lines = ['ID,Student,Class,Arm,Fee Type,Amount,Date,Term,Session,Status,Reference'];
+    rows.forEach(r => lines.push([r.id,r.student_name,r.class_name,r.arm,r.fee_type,r.amount,r.payment_date,r.term,r.session||'',r.status,r.reference||''].join(',')));
+    res.setHeader('Content-Type','text/csv');
+    res.setHeader('Content-Disposition','attachment; filename="fees.csv"');
+    return res.send(lines.join('\n'));
+  } catch (e) { return fail(res, 500, e.message); }
 };

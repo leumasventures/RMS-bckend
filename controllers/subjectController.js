@@ -1,156 +1,76 @@
 'use strict';
-
-/**
- * subjectController.js — Sacred Heart College (SAHARCO)
- *
- * Routes (wired in subjectRoutes.js):
- *   GET    /api/subjects        getAll
- *   GET    /api/subjects/:id    getOne
- *   POST   /api/subjects        create
- *   PUT    /api/subjects/:id    update   (was missing; needed by openSubjectModal)
- *   DELETE /api/subjects/:id    remove
- *
- * Mirrors the VALID_LEVELS / VALID_TYPES from script2.js subjectController section.
- */
-
 const db = require('../config/db');
+const fail = (res, s, m) => res.status(s).json({ success: false, message: m });
+const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: true, ...meta, data });
 
-/* ─── constants ─────────────────────────────────────────────────────────── */
-const VALID_LEVELS = ['All', 'Junior', 'Senior'];
-const VALID_TYPES  = ['Core', 'Science', 'Arts', 'Commercial', 'Vocational', 'Language'];
-
-/* ─── helpers ────────────────────────────────────────────────────────────── */
-
-const fail = (res, status, msg, extra = {}) =>
-  res.status(status).json({ success: false, message: msg, ...extra });
-
-const ok = (res, data, meta = {}, status = 200) =>
-  res.status(status).json({ success: true, ...meta, data });
-
-/** Deterministic numeric id — max existing + 1 (mirrors frontend Date.now() intent) */
-function makeSubjectId() {
-  const list = db.subjects || [];
-  return list.length ? Math.max(...list.map(s => Number(s.id) || 0)) + 1 : 1;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/subjects
-   Query: level, type, code, search
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getAll = (req, res) => {
-  const { level, type, code, search } = req.query;
-
-  let list = [...(db.subjects || [])];
-
-  // level filter: 'Junior' should also include subjects marked 'All'
-  if (level) list = list.filter(s => s.level === level || s.level === 'All');
-  if (type)  list = list.filter(s => s.type  === type);
-  if (code)  list = list.filter(s => s.code  === String(code).toUpperCase());
-
-  if (search) {
-    const q = search.toLowerCase();
-    list = list.filter(s =>
-      (s.name || '').toLowerCase().includes(q) ||
-      (s.code || '').toLowerCase().includes(q)
-    );
-  }
-
-  return res.json({ success: true, data: list, total: list.length });
+exports.getAll = async (req, res) => {
+  try {
+    const { level, type, code, search } = req.query;
+    let sql = 'SELECT * FROM subjects WHERE 1=1';
+    const p = [];
+    if (level)  { sql += ' AND level = ?'; p.push(level); }
+    if (type)   { sql += ' AND type = ?';  p.push(type); }
+    if (code)   { sql += ' AND code = ?';  p.push(code); }
+    if (search) { sql += ' AND name LIKE ?'; p.push(`%${search}%`); }
+    sql += ' ORDER BY name';
+    const rows = await db.query(sql, p);
+    return ok(res, rows, { count: rows.length });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/subjects/:id
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getOne = (req, res) => {
-  // Accept both numeric id and subject name/code
-  const target = req.params.id;
-  const subject = (db.subjects || []).find(s =>
-    s.id === Number(target) ||
-    s.name === target ||
-    s.code === String(target).toUpperCase()
-  );
-  if (!subject) return fail(res, 404, `Subject "${target}" not found.`);
-  return ok(res, subject);
+exports.getOne = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = await db.query1('SELECT * FROM subjects WHERE id=? OR name=? OR code=?', [id, id, id]);
+    if (!row) return fail(res, 404, 'Subject not found.');
+    return ok(res, row);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   POST /api/subjects
-   Body: { name*, code*, level?, type? }
-   Mirrors openSubjectModal form in script2.js.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.create = (req, res) => {
-  const { name, code, level = 'All', type = 'Core' } = req.body ?? {};
+exports.create = async (req, res) => {
+  try {
+    const { name, code, level = 'All', type = 'Core' } = req.body ?? {};
+    if (!name) return fail(res, 400, 'name is required.');
+    if (!code) return fail(res, 400, 'code is required.');
 
-  const missing = ['name', 'code'].filter(f => !req.body?.[f]);
-  if (missing.length) return fail(res, 400, `Missing required fields: ${missing.join(', ')}.`);
+    const exists = await db.query1('SELECT id FROM subjects WHERE name=? OR code=?', [name, code]);
+    if (exists) return fail(res, 409, 'A subject with this name or code already exists.');
 
-  if (!VALID_LEVELS.includes(level))
-    return fail(res, 400, `level must be one of: ${VALID_LEVELS.join(', ')}.`);
-
-  if (!VALID_TYPES.includes(type))
-    return fail(res, 400, `type must be one of: ${VALID_TYPES.join(', ')}.`);
-
-  const normalCode = String(code).trim().toUpperCase();
-  const normalName = String(name).trim();
-
-  // Duplicate checks
-  if ((db.subjects || []).some(s => s.code === normalCode))
-    return fail(res, 409, `Subject code "${normalCode}" already exists.`);
-
-  if ((db.subjects || []).some(s => s.name.toLowerCase() === normalName.toLowerCase()))
-    return fail(res, 409, `Subject "${normalName}" already exists.`);
-
-  if (!db.subjects) db.subjects = [];
-
-  const subject = { id: makeSubjectId(), name: normalName, code: normalCode, level, type };
-  db.subjects.push(subject);
-  return ok(res, subject, {}, 201);
+    const result = await db.run('INSERT INTO subjects (name, code, level, type) VALUES (?, ?, ?, ?)', [name, code, level, type]);
+    const subject = { id: result.insertId, name, code, level, type };
+    db.subjects.push(subject);
+    return ok(res, subject, {}, 201);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   PUT /api/subjects/:id
-   Full update — was missing from the original file.
-   Allows changing name, code, level, or type.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.update = (req, res) => {
-  const idx = (db.subjects || []).findIndex(s => s.id === Number(req.params.id));
-  if (idx < 0) return fail(res, 404, `Subject "${req.params.id}" not found.`);
+exports.update = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = await db.query1('SELECT * FROM subjects WHERE id=?', [id]);
+    if (!row) return fail(res, 404, 'Subject not found.');
 
-  const { name, code, level, type } = req.body ?? {};
+    const name  = req.body.name  || row.name;
+    const code  = req.body.code  || row.code;
+    const level = req.body.level || row.level;
+    const type  = req.body.type  || row.type;
 
-  if (level && !VALID_LEVELS.includes(level))
-    return fail(res, 400, `level must be one of: ${VALID_LEVELS.join(', ')}.`);
+    await db.run('UPDATE subjects SET name=?, code=?, level=?, type=? WHERE id=?', [name, code, level, type, id]);
 
-  if (type && !VALID_TYPES.includes(type))
-    return fail(res, 400, `type must be one of: ${VALID_TYPES.join(', ')}.`);
+    const cached = db.subjects.find(s => s.id === Number(id));
+    if (cached) Object.assign(cached, { name, code, level, type });
 
-  const normalCode = code ? String(code).trim().toUpperCase() : undefined;
-  const normalName = name ? String(name).trim() : undefined;
-
-  // Duplicate checks (exclude self)
-  if (normalCode && (db.subjects || []).some(s => s.code === normalCode && s.id !== Number(req.params.id)))
-    return fail(res, 409, `Subject code "${normalCode}" already exists.`);
-
-  if (normalName && (db.subjects || []).some(s => s.name.toLowerCase() === normalName.toLowerCase() && s.id !== Number(req.params.id)))
-    return fail(res, 409, `Subject "${normalName}" already exists.`);
-
-  const patch = {};
-  if (normalName) patch.name  = normalName;
-  if (normalCode) patch.code  = normalCode;
-  if (level)      patch.level = level;
-  if (type)       patch.type  = type;
-
-  db.subjects[idx] = { ...db.subjects[idx], ...patch };
-  return ok(res, db.subjects[idx]);
+    return ok(res, { id: Number(id), name, code, level, type });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   DELETE /api/subjects/:id
-═══════════════════════════════════════════════════════════════════════════ */
-exports.remove = (req, res) => {
-  const idx = (db.subjects || []).findIndex(s => s.id === Number(req.params.id));
-  if (idx < 0) return fail(res, 404, `Subject "${req.params.id}" not found.`);
+exports.remove = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = await db.query1('SELECT * FROM subjects WHERE id=?', [id]);
+    if (!row) return fail(res, 404, 'Subject not found.');
 
-  const [removed] = db.subjects.splice(idx, 1);
-  return ok(res, removed, { message: `Subject "${removed.name}" removed.` });
+    await db.run('DELETE FROM subjects WHERE id=?', [id]);
+    db.subjects = db.subjects.filter(s => s.id !== Number(id));
+    return ok(res, { id: Number(id), deleted: true, name: row.name });
+  } catch (e) { return fail(res, 500, e.message); }
 };

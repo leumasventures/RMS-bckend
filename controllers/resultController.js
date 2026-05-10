@@ -1,450 +1,302 @@
 'use strict';
-
-/**
- * resultController.js — Sacred Heart College (SAHARCO)
- *
- * Routes (wired in resultRoutes.js):
- *   GET   /api/results                                           getAll
- *   GET   /api/results/stats                                     getStats
- *   GET   /api/results/report-card/:studentId                    getReportCard
- *   GET   /api/results/:id                                       getOne
- *   POST  /api/results                                           create
- *   POST  /api/results/bulk                                      bulkCreate
- *   PUT   /api/results/:id                                       update
- *   DELETE /api/results/:id                                      remove
- *   GET   /api/results/allocations/class/:class/:arm             getClassAllocation
- *   PUT   /api/results/allocations/class/:class/:arm             setClassAllocation
- *   DELETE /api/results/allocations/class/:class/:arm            clearClassAllocation
- *   GET   /api/results/allocations/student/:studentId            getStudentAllocation
- *   PUT   /api/results/allocations/student/:studentId            setStudentAllocation
- *   POST  /api/results/allocations/bulk-student                  bulkSetStudentAllocations
- *
- * Changes from document-13 original:
- *  1. gradeOf thresholds fixed to match the stated school scale:
- *     A≥70, B≥60, C≥50, D≥45, E≥40, F<40  (document-13 had B at 70, no E).
- *  2. Teacher access in getAll now respects missing assignedArm (form-master)
- *     — consistent with attendanceController.
- *  3. getStats: Teacher guard uses canEditClass so a form-master without an
- *     assigned arm can still pull stats for their whole class.
- *  4. create / bulkCreate: ss2/ss3 cap check moved BEFORE upsert call.
- *  5. enrichResult always returns letter + remark fields so the frontend
- *     smRenderResults() doesn't need a separate grade lookup.
- *  6. All responses unified to { success, data, ...meta } shape.
- *  7. allocStore() initialised safely — db.subjectAllocations may be absent.
- *  8. Minor: 'term' and 'session' field aliases accepted in getAll (termId /
- *     sessionId) so the filter works whether api-bridge sends the short or
- *     long form.
- */
-
 const db = require('../config/db');
+const fail = (res, s, m) => res.status(s).json({ success: false, message: m });
+const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: true, ...meta, data });
 
-/* ─── constants ─────────────────────────────────────────────────────────── */
+const GRADE_SCALE = [
+  { min: 70, grade: 'A', remark: 'Distinction' },
+  { min: 60, grade: 'B', remark: 'Very Good'   },
+  { min: 50, grade: 'C', remark: 'Good'         },
+  { min: 45, grade: 'D', remark: 'Pass'         },
+  { min: 40, grade: 'E', remark: 'Weak Pass'    },
+  { min:  0, grade: 'F', remark: 'Fail'         },
+];
 
-const MAX_SUBJECTS_SS23     = 9;
-const SS_INDIVIDUAL_CLASSES = ['SS 2', 'SS 3'];
-
-/* ─── helpers ────────────────────────────────────────────────────────────── */
-
-const fail = (res, status, msg, extra = {}) =>
-  res.status(status).json({ success: false, message: msg, ...extra });
-
-const ok = (res, data, meta = {}, status = 200) =>
-  res.status(status).json({ success: true, ...meta, data });
-
-/**
- * 6-tier grading — A/B/C/D/E/F  matching SAHARCO school standard.
- * Thresholds match what checkResultController and reportCardController use.
- */
-function gradeOf(total) {
-  if (total >= 70) return { letter:'A', remark:'Excellent'  };
-  if (total >= 60) return { letter:'B', remark:'Very Good'  };
-  if (total >= 50) return { letter:'C', remark:'Good'       };
-  if (total >= 45) return { letter:'D', remark:'Pass'       };
-  if (total >= 40) return { letter:'E', remark:'Weak Pass'  };
-  return               { letter:'F', remark:'Fail'       };
+function grade(score) {
+  return GRADE_SCALE.find(g => score >= g.min) || GRADE_SCALE[GRADE_SCALE.length - 1];
 }
 
-function enrichResult(r) {
-  return { ...r, ...gradeOf(r.total) };
-}
+exports.getAll = async (req, res) => {
+  try {
+    const { studentId, class: cls, arm, term, session, subject } = req.query;
+    let sql = `SELECT r.*, s.name AS student_name, c.name AS class_name
+               FROM results r
+               JOIN students s ON s.id=r.student_id
+               LEFT JOIN classes c ON c.id=r.class_id WHERE 1=1`;
+    const p = [];
+    if (studentId) { sql += ' AND r.student_id=?'; p.push(studentId); }
+    if (cls)       { sql += ' AND c.name=?';        p.push(cls); }
+    if (arm)       { sql += ' AND r.arm=?';         p.push(arm); }
+    if (term)      { sql += ' AND r.term=?';        p.push(term); }
+    if (session)   { sql += ' AND r.session=?';     p.push(session); }
+    if (subject)   { sql += ' AND r.subject_name=?';p.push(subject); }
+    sql += ' ORDER BY s.name, r.subject_name';
+    const rows = await db.query(sql, p);
+    return ok(res, rows.map(r => ({ ...r, ...grade(r.total) })), { count: rows.length });
+  } catch (e) { return fail(res, 500, e.message); }
+};
 
-/**
- * Permission — Admin has full access; Teacher only edits their assigned class.
- * Missing assignedArm → form-master pattern (full class access).
- */
-function canEditClass(user, cls, arm) {
-  if (user.role === 'Admin') return true;
-  return (
-    user.role === 'Teacher' &&
-    user.assignedClass === cls &&
-    (!user.assignedArm || user.assignedArm === arm)
-  );
-}
+exports.create = async (req, res) => {
+  try {
+    const { studentId, subject, term, session, ca, exam } = req.body ?? {};
+    if (!studentId || !subject || !term || !session)
+      return fail(res, 400, 'studentId, subject, term, session are required.');
 
-function validateScores(ca, exam) {
-  const caNum   = Number(ca);
-  const examNum = Number(exam);
-  if (isNaN(caNum)   || caNum   < 0 || caNum   > 40) return 'CA score must be between 0 and 40.';
-  if (isNaN(examNum) || examNum < 0 || examNum > 60) return 'Exam score must be between 0 and 60.';
-  return null;
-}
+    const student = await db.query1(`SELECT s.*, c.name AS class_name FROM students s
+      LEFT JOIN classes c ON c.id=s.class_id WHERE s.id=?`, [studentId]);
+    if (!student) return fail(res, 404, 'Student not found.');
 
-/**
- * SS2/SS3 subject cap — returns an error string or null.
- * Called BEFORE the upsert so we don't persist then roll back.
- */
-function checkSubjectLimit(studentId, subject, term, session) {
-  const student = db.findStudent(studentId);
-  if (!student || !SS_INDIVIDUAL_CLASSES.includes(student.class)) return null;
-  // Allow update of an existing record
-  const alreadyHas = !!(db.findResult && db.findResult(studentId, subject, term, session));
-  if (alreadyHas) return null;
-  const count = db.countSubjectsForStudent
-    ? db.countSubjectsForStudent(studentId, term, session)
-    : (db.results || []).filter(r => r.studentId === studentId && r.term === term && r.session === session).length;
-  if (count >= MAX_SUBJECTS_SS23)
-    return `Student ${studentId} has already registered ${MAX_SUBJECTS_SS23} subjects for ${term} ${session} (SS2/SS3 maximum).`;
-  return null;
-}
+    const caVal   = Math.min(40, Math.max(0, parseInt(ca)   || 0));
+    const examVal = Math.min(60, Math.max(0, parseInt(exam) || 0));
+    const total   = caVal + examVal;
 
-function allocStore() {
-  if (!db.subjectAllocations) db.subjectAllocations = {};
-  return db.subjectAllocations;
-}
+    const subj    = db.subjects.find(s => s.name === subject || s.code === subject);
+    const classId = student.class_id;
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/results
-   Query: studentId, class, arm, subject, term (or termId), session (or sessionId)
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getAll = (req, res) => {
-  const {
-    studentId,
-    class: cls, arm,
-    subject,
-    term,      termId,
-    session,   sessionId,
-  } = req.query;
+    // SS2/SS3 cap
+    if (['SS 2','SS 3'].includes(student.class_name)) {
+      const cnt = await db.query1(
+        'SELECT COUNT(DISTINCT subject_name) AS n FROM results WHERE student_id=? AND term=? AND session=?',
+        [studentId, term, session]);
+      const existing = await db.query1(
+        'SELECT id FROM results WHERE student_id=? AND subject_name=? AND term=? AND session=?',
+        [studentId, subject, term, session]);
+      if (!existing && Number(cnt?.n) >= 9)
+        return fail(res, 400, `${student.class_name} students may not exceed 9 subjects.`);
+    }
 
-  const termVal    = term    || termId;
-  const sessionVal = session || sessionId;
-
-  // Parent — own ward only
-  if (req.user.role === 'Parent') {
-    const data = (db.results || [])
-      .filter(r => r.studentId === req.user.wardId)
-      .map(enrichResult);
-    return ok(res, data, { total: data.length });
-  }
-
-  let list = [...(db.results || [])];
-
-  // Teacher — restricted to assigned class (all arms if no arm assigned)
-  if (req.user.role === 'Teacher') {
-    list = list.filter(r =>
-      r.class === req.user.assignedClass &&
-      (!req.user.assignedArm || r.arm === req.user.assignedArm)
+    await db.run(
+      `INSERT INTO results (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam, total)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE ca=VALUES(ca), exam=VALUES(exam), total=VALUES(total)`,
+      [studentId, classId, student.arm, subj?.id || null, subject, term, session, caVal, examVal, total]
     );
-  }
 
-  if (studentId)  list = list.filter(r => r.studentId === studentId);
-  if (cls)        list = list.filter(r => r.class     === cls);
-  if (arm)        list = list.filter(r => r.arm       === arm);
-  if (subject)    list = list.filter(r => r.subject   === subject);
-  if (termVal)    list = list.filter(r => r.term      === termVal);
-  if (sessionVal) list = list.filter(r => r.session   === sessionVal);
+    const saved = await db.query1(
+      'SELECT * FROM results WHERE student_id=? AND subject_name=? AND term=? AND session=?',
+      [studentId, subject, term, session]);
 
-  return ok(res, list.map(enrichResult), { total: list.length });
+    return ok(res, { ...saved, ...grade(total) }, {}, 201);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/results/:id
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getOne = (req, res) => {
-  const result = (db.results || []).find(r => r.id === Number(req.params.id));
-  if (!result) return fail(res, 404, 'Result not found.');
+exports.bulkCreate = async (req, res) => {
+  try {
+    const { results: rows = [], class_id: cls, subject_id: subject, term_id: term, session_id: session } = req.body ?? {};
+    if (!Array.isArray(rows) || !rows.length) return fail(res, 400, 'results[] required.');
 
-  if (req.user.role === 'Parent' && result.studentId !== req.user.wardId)
-    return fail(res, 403, 'Access denied.');
-  if (req.user.role === 'Teacher' && !canEditClass(req.user, result.class, result.arm))
-    return fail(res, 403, 'Access denied.');
+    let saved = 0, skipped = 0;
 
-  return ok(res, enrichResult(result));
+    for (const r of rows) {
+      const studentId  = r.student_id || r.studentId;
+      const subjectName = subject || r.subject_id || r.subject;
+      const termVal    = term    || r.term_id    || r.term;
+      const sessionVal = session || r.session_id || r.session;
+      if (!studentId || !subjectName || !termVal || !sessionVal) { skipped++; continue; }
+
+      const student = await db.query1(`SELECT s.*, c.name AS class_name FROM students s
+        LEFT JOIN classes c ON c.id=s.class_id WHERE s.id=?`, [studentId]);
+      if (!student) { skipped++; continue; }
+
+      const caVal   = Math.min(40, Math.max(0, parseInt(r.ca)   || 0));
+      const examVal = Math.min(60, Math.max(0, parseInt(r.exam) || 0));
+      const total   = caVal + examVal;
+      const subj    = db.subjects.find(s => s.name === subjectName || s.code === subjectName);
+
+      try {
+        await db.run(
+          `INSERT INTO results (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam, total)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE ca=VALUES(ca), exam=VALUES(exam), total=VALUES(total)`,
+          [studentId, student.class_id, student.arm, subj?.id || null, subjectName, termVal, sessionVal, caVal, examVal, total]
+        );
+        saved++;
+      } catch { skipped++; }
+    }
+
+    return ok(res, { saved, skipped });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/results/report-card/:studentId
-   Query: term, session
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getReportCard = (req, res) => {
-  const { studentId }     = req.params;
-  const { term, session } = req.query;
+exports.update = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = await db.query1('SELECT * FROM results WHERE id=?', [id]);
+    if (!row) return fail(res, 404, 'Result not found.');
 
-  if (req.user.role === 'Parent' && req.user.wardId !== studentId)
-    return fail(res, 403, 'Access denied.');
+    const caVal   = req.body.ca   != null ? Math.min(40, Math.max(0, parseInt(req.body.ca)))   : row.ca;
+    const examVal = req.body.exam != null ? Math.min(60, Math.max(0, parseInt(req.body.exam))) : row.exam;
+    const total   = caVal + examVal;
 
-  const student = db.findStudent(studentId);
-  if (!student) return fail(res, 404, `Student "${studentId}" not found.`);
-
-  let rows = (db.results || []).filter(r => r.studentId === studentId);
-  if (term)    rows = rows.filter(r => r.term    === term);
-  if (session) rows = rows.filter(r => r.session === session);
-
-  const enriched   = rows.map(enrichResult);
-  const totalScore = enriched.reduce((s, r) => s + r.total, 0);
-  const average    = enriched.length ? parseFloat((totalScore / enriched.length).toFixed(1)) : null;
-
-  return ok(res, {
-    student,
-    term:    term    || 'All',
-    session: session || 'All',
-    results: enriched,
-    summary: {
-      subjectCount:  enriched.length,
-      totalScore,
-      average,
-      overallGrade:  average != null ? gradeOf(average).letter : null,
-      overallRemark: average != null ? gradeOf(average).remark : null,
-    },
-  });
+    await db.run('UPDATE results SET ca=?, exam=?, total=? WHERE id=?', [caVal, examVal, total, id]);
+    return ok(res, { ...row, ca: caVal, exam: examVal, total, ...grade(total) });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/results/stats
-   Query: class, arm, term, session
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getStats = (req, res) => {
-  const { class: cls, arm, term, session } = req.query;
-
-  // Teacher guard uses canEditClass (allows form-master without assignedArm)
-  if (req.user.role === 'Teacher' && !canEditClass(req.user, cls, arm))
-    return fail(res, 403, 'Access denied.');
-
-  let list = [...(db.results || [])];
-  if (cls)     list = list.filter(r => r.class   === cls);
-  if (arm)     list = list.filter(r => r.arm     === arm);
-  if (term)    list = list.filter(r => r.term    === term);
-  if (session) list = list.filter(r => r.session === session);
-
-  if (!list.length)
-    return ok(res, null, { message: 'No results found for the given filters.' });
-
-  const totals  = list.map(r => r.total);
-  const avg     = totals.reduce((a, b) => a + b, 0) / totals.length;
-  const passing = list.filter(r => r.total >= 40).length;
-
-  const gradeDist = { A:0, B:0, C:0, D:0, E:0, F:0 };
-  list.forEach(r => { gradeDist[gradeOf(r.total).letter]++; });
-
-  const bySubject = {};
-  list.forEach(r => {
-    if (!bySubject[r.subject]) bySubject[r.subject] = [];
-    bySubject[r.subject].push(r.total);
-  });
-  const subjectAverages = Object.entries(bySubject)
-    .map(([subject, scores]) => ({
-      subject,
-      average: parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)),
-      count:   scores.length,
-      highest: Math.max(...scores),
-      lowest:  Math.min(...scores),
-    }))
-    .sort((a, b) => b.average - a.average);
-
-  return ok(res, {
-    filters:    { class: cls, arm, term, session },
-    total:      list.length,
-    average:    parseFloat(avg.toFixed(1)),
-    highest:    Math.max(...totals),
-    lowest:     Math.min(...totals),
-    passing,
-    failing:    list.length - passing,
-    passRate:   parseFloat(((passing / list.length) * 100).toFixed(1)),
-    gradeDist,
-    subjectAverages,
-  });
+exports.remove = async (req, res) => {
+  try {
+    const row = await db.query1('SELECT id FROM results WHERE id=?', [req.params.id]);
+    if (!row) return fail(res, 404, 'Result not found.');
+    await db.run('DELETE FROM results WHERE id=?', [req.params.id]);
+    return ok(res, { id: Number(req.params.id), deleted: true });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   POST /api/results  — single entry
-   Body: { studentId, class, arm, subject, term, session, ca, exam }
-═══════════════════════════════════════════════════════════════════════════ */
-exports.create = (req, res) => {
-  const { studentId, class: cls, arm, subject, term, session, ca, exam } = req.body;
+exports.getStats = async (req, res) => {
+  try {
+    const { class: cls, arm, term, session } = req.query;
+    const clsRow = cls ? await db.query1('SELECT id FROM classes WHERE name=?', [cls]) : null;
+    const classId = clsRow?.id || null;
 
-  const missing = ['studentId','class','arm','subject','term','session','ca','exam']
-    .filter(f => req.body[f] === undefined || req.body[f] === '');
-  if (missing.length) return fail(res, 400, `Missing required fields: ${missing.join(', ')}.`);
+    const [overall, bySubject] = await Promise.all([
+      db.query1(
+        `SELECT COUNT(*) AS total, ROUND(AVG(total),1) AS average, MAX(total) AS highest, MIN(total) AS lowest,
+         SUM(total>=70) AS A, SUM(total BETWEEN 60 AND 69) AS B, SUM(total BETWEEN 50 AND 59) AS C,
+         SUM(total BETWEEN 45 AND 49) AS D, SUM(total BETWEEN 40 AND 44) AS E, SUM(total<40) AS F,
+         SUM(total>=40) AS passing, SUM(total<40) AS failing,
+         ROUND(SUM(total>=40)/COUNT(*)*100,1) AS pass_rate
+         FROM results WHERE 1=1${classId?' AND class_id=?':''}${arm?' AND arm=?':''}${term?' AND term=?':''}${session?' AND session=?':''}`,
+        [...(classId?[classId]:[]), ...(arm?[arm]:[]), ...(term?[term]:[]), ...(session?[session]:[])]
+      ),
+      db.query(
+        `SELECT subject_name AS subject, ROUND(AVG(total),1) AS average, COUNT(*) AS count, MAX(total) AS highest, MIN(total) AS lowest
+         FROM results WHERE 1=1${classId?' AND class_id=?':''}${arm?' AND arm=?':''}${term?' AND term=?':''}${session?' AND session=?':''}
+         GROUP BY subject_name ORDER BY average DESC`,
+        [...(classId?[classId]:[]), ...(arm?[arm]:[]), ...(term?[term]:[]), ...(session?[session]:[])]
+      ),
+    ]);
 
-  if (!canEditClass(req.user, cls, arm))
-    return fail(res, 403, 'You can only enter results for your assigned class.');
-
-  if (!db.findStudent(studentId))
-    return fail(res, 404, `Student "${studentId}" not found.`);
-
-  const scoreError = validateScores(ca, exam);
-  if (scoreError) return fail(res, 400, scoreError);
-
-  // Subject cap checked BEFORE upsert
-  const limitError = checkSubjectLimit(studentId, subject, term, session);
-  if (limitError) return fail(res, 400, limitError);
-
-  const caNum = Number(ca);
-  const exNum = Number(exam);
-  const total = Math.min(caNum + exNum, 100);
-
-  const saved = db.upsertResult({ studentId, class: cls, arm, subject, term, session, ca: caNum, exam: exNum, total });
-  return ok(res, enrichResult(saved), {}, 201);
+    return ok(res, { overall, bySubject });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   POST /api/results/bulk
-   Body: { class, arm, term, session, rows: [{ studentId, subject, ca, exam }] }
-═══════════════════════════════════════════════════════════════════════════ */
-exports.bulkCreate = (req, res) => {
-  const { class: cls, arm, term, session, rows } = req.body;
-
-  if (!cls || !arm || !term || !session) return fail(res, 400, 'class, arm, term, and session are required.');
-  if (!Array.isArray(rows) || !rows.length) return fail(res, 400, 'rows must be a non-empty array.');
-
-  if (!canEditClass(req.user, cls, arm))
-    return fail(res, 403, 'You can only enter results for your assigned class.');
-
-  const saved = [], errors = [];
-
-  rows.forEach((row, i) => {
-    const label   = `Row ${i + 1}`;
-    const { studentId, subject, ca, exam } = row;
-
-    const missing = ['studentId','subject','ca','exam'].filter(f => row[f] === undefined || row[f] === '');
-    if (missing.length) { errors.push({ row: label, reason: `Missing: ${missing.join(', ')}.` }); return; }
-    if (!db.findStudent(studentId)) { errors.push({ row: label, reason: `Student "${studentId}" not found.` }); return; }
-
-    const scoreError = validateScores(ca, exam);
-    if (scoreError) { errors.push({ row: label, reason: scoreError }); return; }
-
-    const limitError = checkSubjectLimit(studentId, subject, term, session);
-    if (limitError) { errors.push({ row: label, reason: limitError }); return; }
-
-    const caNum = Number(ca), exNum = Number(exam);
-    const entry = db.upsertResult({ studentId, class: cls, arm, subject, term, session, ca: caNum, exam: exNum, total: Math.min(caNum + exNum, 100) });
-    saved.push(enrichResult(entry));
-  });
-
-  return res.status(saved.length ? 207 : 400).json({
-    success: saved.length > 0,
-    saved:   saved.length,
-    errors:  errors.length,
-    data:    saved,
-    issues:  errors,
-  });
+exports.getAllocations = async (req, res) => {
+  try {
+    const { class: cls, arm } = req.query;
+    const clsRow = cls ? await db.query1('SELECT id FROM classes WHERE name=?', [cls]) : null;
+    if (!clsRow) return ok(res, []);
+    const rows = await db.query(
+      'SELECT s.name, s.code, s.level, s.type FROM class_subject_allocations a JOIN subjects s ON s.id=a.subject_id WHERE a.class_id=?' + (arm ? ' AND a.arm=?' : ''),
+      arm ? [clsRow.id, arm] : [clsRow.id]);
+    return ok(res, rows);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   PUT /api/results/:id
-═══════════════════════════════════════════════════════════════════════════ */
-exports.update = (req, res) => {
-  const id  = Number(req.params.id);
-  const idx = (db.results || []).findIndex(r => r.id === id);
-  if (idx < 0) return fail(res, 404, 'Result not found.');
-
-  const existing = db.results[idx];
-  if (!canEditClass(req.user, existing.class, existing.arm))
-    return fail(res, 403, 'You can only edit results for your assigned class.');
-
-  const ca   = req.body.ca   !== undefined ? req.body.ca   : existing.ca;
-  const exam = req.body.exam !== undefined ? req.body.exam : existing.exam;
-
-  const scoreError = validateScores(ca, exam);
-  if (scoreError) return fail(res, 400, scoreError);
-
-  const caNum = Number(ca), exNum = Number(exam);
-  db.results[idx] = { ...existing, ca: caNum, exam: exNum, total: Math.min(caNum + exNum, 100) };
-  return ok(res, enrichResult(db.results[idx]));
+/* ── GET /api/results/:id ──────────────────────────────────────────────── */
+exports.getOne = async (req, res) => {
+  try {
+    const row = await db.query1(`SELECT r.*, s.name AS student_name
+      FROM results r JOIN students s ON s.id=r.student_id WHERE r.id=?`, [req.params.id]);
+    if (!row) return fail(res, 404, 'Result not found.');
+    return ok(res, { ...row, ...grade(row.total) });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   DELETE /api/results/:id  — Admin only
-═══════════════════════════════════════════════════════════════════════════ */
-exports.remove = (req, res) => {
-  const id  = Number(req.params.id);
-  const idx = (db.results || []).findIndex(r => r.id === id);
-  if (idx < 0) return fail(res, 404, 'Result not found.');
-
-  const [removed] = db.results.splice(idx, 1);
-  return ok(res, removed, { message: 'Result deleted.' });
+/* ── GET /api/results/report-card/:studentId ───────────────────────────── */
+exports.getReportCard = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { term, session } = req.query;
+    const rows = await db.query(
+      'SELECT * FROM results WHERE student_id=? AND term=? AND session=? ORDER BY subject_name',
+      [studentId, term, session]);
+    const total = rows.reduce((a, r) => a + r.total, 0);
+    const avg   = rows.length ? parseFloat((total / rows.length).toFixed(1)) : 0;
+    const graded = rows.map(r => ({ ...r, ...grade(r.total) }));
+    return ok(res, { studentId, term, session, results: graded, average: avg, totalScore: total });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   SUBJECT ALLOCATIONS
-═══════════════════════════════════════════════════════════════════════════ */
-
-exports.getClassAllocation = (req, res) => {
-  const { class: cls, arm } = req.params;
-  if (req.user.role === 'Teacher' && !canEditClass(req.user, cls, arm))
-    return fail(res, 403, 'Access denied.');
-  const allocated = allocStore()[`${cls}_${arm}`] || [];
-  return ok(res, { class: cls, arm, subjects: allocated });
+/* ── CLASS ALLOCATION ──────────────────────────────────────────────────── */
+exports.getClassAllocation = async (req, res) => {
+  try {
+    const { class: cls, arm } = req.params;
+    const clsRow = await db.query1('SELECT id FROM classes WHERE name=?', [cls]);
+    if (!clsRow) return fail(res, 404, 'Class not found.');
+    const rows = await db.query(
+      `SELECT s.id, s.name, s.code, s.level, s.type
+       FROM class_subject_allocations a JOIN subjects s ON s.id=a.subject_id
+       WHERE a.class_id=? AND a.arm=? ORDER BY s.name`, [clsRow.id, arm]);
+    return ok(res, rows);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-exports.setClassAllocation = (req, res) => {
-  const { class: cls, arm } = req.params;
-  const { subjects } = req.body;
-  if (!canEditClass(req.user, cls, arm)) return fail(res, 403, 'Access denied.');
-  if (!Array.isArray(subjects)) return fail(res, 400, 'subjects must be an array.');
-  allocStore()[`${cls}_${arm}`] = subjects;
-  return ok(res, { class: cls, arm, subjects });
+exports.setClassAllocation = async (req, res) => {
+  try {
+    const { class: cls, arm } = req.params;
+    const { subjects = [] } = req.body ?? {};
+    const clsRow = await db.query1('SELECT id FROM classes WHERE name=?', [cls]);
+    if (!clsRow) return fail(res, 404, 'Class not found.');
+
+    await db.run('DELETE FROM class_subject_allocations WHERE class_id=? AND arm=?', [clsRow.id, arm]);
+    for (const subjectId of subjects) {
+      await db.run('INSERT IGNORE INTO class_subject_allocations (class_id, arm, subject_id) VALUES (?, ?, ?)',
+        [clsRow.id, arm, subjectId]);
+    }
+    return ok(res, { class: cls, arm, subjects, updated: true });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-exports.clearClassAllocation = (req, res) => {
-  const { class: cls, arm } = req.params;
-  allocStore()[`${cls}_${arm}`] = [];
-  return ok(res, null, { message: `Allocation cleared for ${cls} ${arm}.` });
+exports.clearClassAllocation = async (req, res) => {
+  try {
+    const { class: cls, arm } = req.params;
+    const clsRow = await db.query1('SELECT id FROM classes WHERE name=?', [cls]);
+    if (!clsRow) return fail(res, 404, 'Class not found.');
+    await db.run('DELETE FROM class_subject_allocations WHERE class_id=? AND arm=?', [clsRow.id, arm]);
+    return ok(res, { class: cls, arm, cleared: true });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-exports.getStudentAllocation = (req, res) => {
-  const { studentId } = req.params;
-  if (req.user.role === 'Parent' && req.user.wardId !== studentId)
-    return fail(res, 403, 'Access denied.');
-  const student = db.findStudent(studentId);
-  if (!student) return fail(res, 404, `Student "${studentId}" not found.`);
-  if (!SS_INDIVIDUAL_CLASSES.includes(student.class))
-    return fail(res, 400, `Per-student allocation only applies to SS2/SS3. ${student.name} is in ${student.class}.`);
-  return ok(res, { studentId, subjects: allocStore()[studentId] || [] });
+/* ── STUDENT ALLOCATION ────────────────────────────────────────────────── */
+exports.getStudentAllocation = async (req, res) => {
+  try {
+    const rows = await db.query(
+      `SELECT s.id, s.name, s.code, s.level, s.type
+       FROM student_subject_allocations a JOIN subjects s ON s.id=a.subject_id
+       WHERE a.student_id=? ORDER BY s.name`, [req.params.studentId]);
+    return ok(res, rows);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-exports.setStudentAllocation = (req, res) => {
-  const { studentId } = req.params;
-  const { subjects }  = req.body;
-  const student = db.findStudent(studentId);
-  if (!student) return fail(res, 404, `Student "${studentId}" not found.`);
-  if (!SS_INDIVIDUAL_CLASSES.includes(student.class))
-    return fail(res, 400, 'Per-student allocation only applies to SS2/SS3 students.');
-  if (!Array.isArray(subjects)) return fail(res, 400, 'subjects must be an array.');
-  if (subjects.length > MAX_SUBJECTS_SS23)
-    return fail(res, 400, `SS2/SS3 students may not register more than ${MAX_SUBJECTS_SS23} subjects.`);
-  if (!canEditClass(req.user, student.class, student.arm))
-    return fail(res, 403, 'Access denied.');
-  allocStore()[studentId] = subjects;
-  return ok(res, { studentId, subjects });
+exports.setStudentAllocation = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { subjects = [] } = req.body ?? {};
+
+    const student = await db.query1('SELECT id FROM students WHERE id=?', [studentId]);
+    if (!student) return fail(res, 404, 'Student not found.');
+    if (subjects.length > 9) return fail(res, 400, 'Maximum 9 subjects allowed for SS2/SS3.');
+
+    await db.run('DELETE FROM student_subject_allocations WHERE student_id=?', [studentId]);
+    for (const subjectId of subjects) {
+      await db.run('INSERT IGNORE INTO student_subject_allocations (student_id, subject_id) VALUES (?, ?)',
+        [studentId, subjectId]);
+    }
+    return ok(res, { studentId, subjects, updated: true });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-exports.bulkSetStudentAllocations = (req, res) => {
-  const { class: cls, arm, subjects } = req.body;
-  if (!cls || !arm) return fail(res, 400, 'class and arm are required.');
-  if (!SS_INDIVIDUAL_CLASSES.includes(cls))
-    return fail(res, 400, 'Bulk per-student allocation only applies to SS2/SS3.');
-  if (!canEditClass(req.user, cls, arm)) return fail(res, 403, 'Access denied.');
-  if (!Array.isArray(subjects) || !subjects.length) return fail(res, 400, 'subjects must be a non-empty array.');
-  if (subjects.length > MAX_SUBJECTS_SS23)
-    return fail(res, 400, `Cannot allocate more than ${MAX_SUBJECTS_SS23} subjects per student.`);
+exports.bulkSetStudentAllocations = async (req, res) => {
+  try {
+    const { class: cls, arm, subjects = [] } = req.body ?? {};
+    if (!cls || !arm) return fail(res, 400, 'class and arm are required.');
+    if (subjects.length > 9) return fail(res, 400, 'Maximum 9 subjects allowed.');
 
-  const students = (db.students || []).filter(s => s.class === cls && s.arm === arm && s.active !== false);
-  if (!students.length) return fail(res, 404, `No students found in ${cls} ${arm}.`);
+    const clsRow = await db.query1('SELECT id FROM classes WHERE name=?', [cls]);
+    if (!clsRow) return fail(res, 404, 'Class not found.');
 
-  const store = allocStore();
-  students.forEach(s => { store[s.id] = [...subjects]; });
+    const students = await db.query('SELECT id FROM students WHERE class_id=? AND arm=? AND active=1', [clsRow.id, arm]);
+    let updated = 0;
 
-  return ok(res, { class: cls, arm, subjects, studentsUpdated: students.length }, {
-    message: `${subjects.length} subjects allocated to ${students.length} students in ${cls} ${arm}.`,
-  });
+    for (const student of students) {
+      await db.run('DELETE FROM student_subject_allocations WHERE student_id=?', [student.id]);
+      for (const subjectId of subjects) {
+        await db.run('INSERT IGNORE INTO student_subject_allocations (student_id, subject_id) VALUES (?, ?)',
+          [student.id, subjectId]);
+      }
+      updated++;
+    }
+
+    return ok(res, { class: cls, arm, subjects, studentsUpdated: updated });
+  } catch (e) { return fail(res, 500, e.message); }
 };

@@ -2,37 +2,13 @@
 
 /**
  * studentController.js — Sacred Heart College (SAHARCO)
- *
- * Routes (wired in studentRoutes.js):
- *   GET    /api/students              getAll
- *   GET    /api/students/:id          getOne
- *   GET    /api/students/:id/summary  getSummary
- *   POST   /api/students              create
- *   POST   /api/students/bulk         bulkCreate
- *   PUT    /api/students/:id          update
- *   PATCH  /api/students/:id/transfer          transfer
- *   PATCH  /api/students/:id/attendance        updateAttendance
- *   PATCH  /api/students/:id/status            setStatus
- *   DELETE /api/students/:id          remove
- *   GET    /api/students/export       exportStudents  (CSV)
- *   GET    /api/students/:id/results  getResults
- *   GET    /api/students/:id/attendance getAttendance
- *   GET    /api/students/:id/report-card getReportCard
- *
- * Role matrix:
- *   Admin   → full CRUD + bulk + transfer + export
- *   Teacher → read own class/arm + attendance update
- *   Parent  → read own ward only
+ * ALL writes go to MySQL via db.pool. In-memory cache is kept in sync.
  */
 
 const db = require('../config/db');
 
-/* ─── constants ─────────────────────────────────────────────────────────── */
-const VALID_GENDERS   = ['Male', 'Female'];
-const VALID_STATUSES  = ['active', 'suspended', 'graduated', 'withdrawn', 'transferred'];
-const VALID_SORT_COLS = ['name', 'id', 'class', 'arm', 'gender', 'attendance'];
-
-/* ─── helpers ────────────────────────────────────────────────────────────── */
+const VALID_GENDERS  = ['Male', 'Female'];
+const VALID_STATUSES = ['active', 'suspended', 'graduated', 'withdrawn', 'transferred'];
 
 const fail = (res, status, msg, extra = {}) =>
   res.status(status).json({ success: false, message: msg, ...extra });
@@ -40,29 +16,6 @@ const fail = (res, status, msg, extra = {}) =>
 const ok = (res, data, meta = {}, status = 200) =>
   res.status(status).json({ success: true, ...meta, data });
 
-/** Returns false and sends 403 if a Teacher cannot access this student */
-function teacherCanAccess(req, res, student) {
-  const { assignedClass, assignedArm } = req.user;
-  if (student.class !== assignedClass) {
-    fail(res, 403, 'Access restricted to your assigned class.');
-    return false;
-  }
-  if (assignedArm && student.arm !== assignedArm) {
-    fail(res, 403, 'Access restricted to your assigned arm.');
-    return false;
-  }
-  return true;
-}
-
-/** Parse and validate attendance — returns integer 0–100 or throws */
-function parseAttendance(val) {
-  const n = Number(val);
-  if (isNaN(n) || n < 0 || n > 100)
-    throw new Error('attendance must be a number between 0 and 100.');
-  return Math.round(n);
-}
-
-/** Collision-free SHC/NNN student ID */
 function generateStudentId() {
   const existing = new Set((db.students || []).map(s => s.id));
   let n = (db.students || []).length + 1, id;
@@ -70,489 +23,386 @@ function generateStudentId() {
   return id;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/students
-   Query (Admin only): class, arm, gender, search, attnBelow, attnAbove,
-                       sortBy, sortDir (asc|desc), page, limit
-   Teacher  → own class/arm only.
-   Parent   → own ward only.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getAll = (req, res) => {
-  const { role, assignedClass, assignedArm, wardId } = req.user;
+function parseAttendance(val) {
+  const n = Number(val);
+  if (isNaN(n) || n < 0 || n > 100) throw new Error('attendance must be 0–100.');
+  return Math.round(n);
+}
 
-  // ── Parent ────────────────────────────────────────────────────────────────
-  if (role === 'Parent') {
-    const ward = wardId ? db.findStudent(wardId) : null;
-    return ok(res, ward ? [ward] : [], { total: ward ? 1 : 0 });
+function teacherCanAccess(req, res, student) {
+  const { assignedClass, assignedArm } = req.user;
+  if (student.class !== assignedClass) {
+    fail(res, 403, 'Access restricted to your assigned class.'); return false;
   }
-
-  // ── Teacher ───────────────────────────────────────────────────────────────
-  if (role === 'Teacher') {
-    const data = (db.students || []).filter(s =>
-      s.class === assignedClass &&
-      (!assignedArm || s.arm === assignedArm) &&
-      s.active !== false
-    );
-    return ok(res, data, { total: data.length });
+  if (assignedArm && student.arm !== assignedArm) {
+    fail(res, 403, 'Access restricted to your assigned arm.'); return false;
   }
+  return true;
+}
 
-  // ── Admin: full filter + sort + paginate ──────────────────────────────────
-  const {
-    class: cls, arm, gender, search,
-    attnBelow, attnAbove,
-    sortBy = 'name', sortDir = 'asc',
-    page = '1', limit = '50',
-  } = req.query;
+/* ── GET /api/students ──────────────────────────────────────────────────── */
+exports.getAll = async (req, res) => {
+  try {
+    const { role, assignedClass, assignedArm, wardId } = req.user;
+    let { class: cls, arm, gender, search, attnBelow, attnAbove,
+          sortBy = 'name', sortDir = 'asc', page = 1, limit = 100 } = req.query;
 
-  if (sortBy && !VALID_SORT_COLS.includes(sortBy))
-    return fail(res, 400, `sortBy must be one of: ${VALID_SORT_COLS.join(', ')}.`);
-  if (sortDir && !['asc', 'desc'].includes(sortDir))
-    return fail(res, 400, 'sortDir must be asc or desc.');
+    let sql = `SELECT s.*, c.name AS class_name FROM students s
+               LEFT JOIN classes c ON c.id = s.class_id WHERE 1=1`;
+    const params = [];
 
-  const pageNum  = Math.max(1, parseInt(page,  10) || 1);
-  const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
-
-  let list = (db.students || []).filter(s => {
-    if (s.active === false) return false;
-    if (cls    && s.class  !== cls)    return false;
-    if (arm    && s.arm    !== arm)    return false;
-    if (gender && s.gender !== gender) return false;
-    if (attnBelow != null && s.attendance >= Number(attnBelow)) return false;
-    if (attnAbove != null && s.attendance <  Number(attnAbove)) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      if (![s.name, s.id, s.parent ?? '', s.class].join(' ').toLowerCase().includes(q)) return false;
+    if (role === 'Parent') {
+      sql += ' AND s.id = ?'; params.push(wardId);
+    } else {
+      if (role === 'Teacher') { cls = assignedClass; arm = arm || assignedArm; }
+      if (cls)    { sql += ' AND c.name = ?';  params.push(cls); }
+      if (arm)    { sql += ' AND s.arm = ?';   params.push(arm); }
+      if (gender) { sql += ' AND s.gender = ?';params.push(gender); }
+      if (search) { sql += ' AND s.name LIKE ?';params.push(`%${search}%`); }
+      if (attnBelow != null) { sql += ' AND s.attendance <= ?'; params.push(Number(attnBelow)); }
+      if (attnAbove != null) { sql += ' AND s.attendance >= ?'; params.push(Number(attnAbove)); }
     }
-    return true;
-  });
 
-  const dir = sortDir === 'desc' ? -1 : 1;
-  list.sort((a, b) => {
-    const va = a[sortBy] ?? '', vb = b[sortBy] ?? '';
-    return (typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb))) * dir;
-  });
+    const safe = ['name','id','arm','gender','attendance'].includes(sortBy) ? sortBy : 'name';
+    const dir  = sortDir === 'desc' ? 'DESC' : 'ASC';
+    sql += ` ORDER BY s.${safe} ${dir}`;
 
-  const total = list.length;
-  return ok(res, list.slice((pageNum - 1) * limitNum, pageNum * limitNum), {
-    total, page: pageNum, limit: limitNum,
-    totalPages: Math.ceil(total / limitNum),
-  });
+    const pgNum  = Math.max(1, parseInt(page));
+    const pgSize = Math.min(500, Math.max(1, parseInt(limit)));
+    sql += ` LIMIT ${pgSize} OFFSET ${(pgNum - 1) * pgSize}`;
+
+    const rows = await db.query(sql, params);
+    const data = rows.map(s => ({
+      id: s.id, name: s.name, class: s.class_name, arm: s.arm,
+      gender: s.gender, dob: s.dob, parent: s.parent, phone: s.phone,
+      attendance: parseFloat(s.attendance), active: !!s.active, status: s.status,
+    }));
+    return ok(res, data, { count: data.length });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/students/:id
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getOne = (req, res) => {
-  const student = db.findStudent(req.params.id);
-  if (!student) return fail(res, 404, 'Student not found.');
-
-  if (req.user.role === 'Parent') {
-    if (req.user.wardId !== student.id) return fail(res, 403, 'Access denied.');
-    return ok(res, student);
-  }
-
-  if (req.user.role === 'Teacher' && !teacherCanAccess(req, res, student)) return;
-  return ok(res, student);
+/* ── GET /api/students/:id ──────────────────────────────────────────────── */
+exports.getOne = async (req, res) => {
+  try {
+    const rows = await db.query(
+      `SELECT s.*, c.name AS class_name FROM students s
+       LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = ?`, [req.params.id]);
+    if (!rows.length) return fail(res, 404, 'Student not found.');
+    const s = rows[0];
+    if (req.user.role === 'Teacher' && !teacherCanAccess(req, res, { class: s.class_name, arm: s.arm })) return;
+    return ok(res, { id: s.id, name: s.name, class: s.class_name, arm: s.arm,
+      gender: s.gender, dob: s.dob, parent: s.parent, phone: s.phone,
+      attendance: parseFloat(s.attendance), active: !!s.active, status: s.status });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/students/:id/summary
-   Query: term*, session*
-   Returns aggregated result stats + attendance summary.
-   Used by viewStudent profile tab and parent portal.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getSummary = (req, res) => {
-  const student = db.findStudent(req.params.id);
-  if (!student) return fail(res, 404, 'Student not found.');
+/* ── GET /api/students/:id/summary ─────────────────────────────────────── */
+exports.getSummary = async (req, res) => {
+  try {
+    const { term, session } = req.query;
+    const s = await db.query(
+      `SELECT s.*, c.name AS class_name FROM students s
+       LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = ?`, [req.params.id]);
+    if (!s.length) return fail(res, 404, 'Student not found.');
+    const student = s[0];
 
-  if (req.user.role === 'Parent' && req.user.wardId !== student.id) return fail(res, 403, 'Access denied.');
-  if (req.user.role === 'Teacher' && !teacherCanAccess(req, res, student)) return;
+    const [results, attRows] = await Promise.all([
+      db.query('SELECT * FROM results WHERE student_id=? AND term=? AND session=?',
+               [req.params.id, term, session]),
+      db.query('SELECT status, COUNT(*) AS cnt FROM attendance WHERE student_id=? AND term=? AND session=? GROUP BY status',
+               [req.params.id, term, session]),
+    ]);
 
-  const { term, session } = req.query;
-  if (!term || !session) return fail(res, 400, 'term and session are required.');
+    const total = results.reduce((a, r) => a + r.total, 0);
+    const avg   = results.length ? parseFloat((total / results.length).toFixed(1)) : 0;
+    const att   = {};
+    attRows.forEach(r => { att[r.status] = r.cnt; });
 
-  const results = (db.results || []).filter(r =>
-    r.studentId === student.id && r.term === term && r.session === session
-  );
-
-  const subjectCount = results.length;
-  const total        = results.reduce((s, r) => s + (r.total || 0), 0);
-  const average      = subjectCount ? parseFloat((total / subjectCount).toFixed(1)) : null;
-
-  const attRecords = (db.attendance || []).filter(r =>
-    r.studentId === student.id && r.term === term && r.session === session
-  );
-  const present = attRecords.filter(r => (r.status || '').toLowerCase() === 'p').length;
-  const absent  = attRecords.filter(r => (r.status || '').toLowerCase() === 'a').length;
-  const late    = attRecords.filter(r => (r.status || '').toLowerCase() === 'l').length;
-
-  return ok(res, {
-    student, term, session,
-    results,
-    summary: {
-      subjectCount,
-      totalScore:  total,
-      average,
-      present, absent, late,
-      attendancePct: attRecords.length
-        ? parseFloat((present / attRecords.length * 100).toFixed(1))
-        : student.attendance ?? 100,
-    },
-  });
+    return ok(res, {
+      student: { id: student.id, name: student.name, class: student.class_name, arm: student.arm },
+      results: { count: results.length, total, average: avg },
+      attendance: { present: att.p || 0, late: att.l || 0, absent: att.a || 0, excused: att.e || 0 },
+    });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   POST /api/students
-   Body: { id?, name*, class*, arm*, gender, attendance, dob, parent, phone }
-   If id is omitted, one is auto-generated (SHC/NNN).
-═══════════════════════════════════════════════════════════════════════════ */
-exports.create = (req, res) => {
-  const { id: rawId, name, class: cls, arm, gender, attendance, dob, parent, phone } = req.body ?? {};
+/* ── POST /api/students ─────────────────────────────────────────────────── */
+exports.create = async (req, res) => {
+  try {
+    const { name, class: cls, arm, gender = 'Male', dob, parent, phone, attendance, id: rawId } = req.body ?? {};
+    if (!name) return fail(res, 400, 'name is required.');
+    if (!cls)  return fail(res, 400, 'class is required.');
+    if (!arm)  return fail(res, 400, 'arm is required.');
+    if (!VALID_GENDERS.includes(gender)) return fail(res, 400, `gender must be Male or Female.`);
 
-  const missing = ['name', 'class', 'arm'].filter(f => !req.body?.[f]);
-  if (missing.length) return fail(res, 400, `Missing required fields: ${missing.join(', ')}.`);
+    const clsObj = db.findClass(cls);
+    if (!clsObj) return fail(res, 400, `Class "${cls}" does not exist.`);
+    if (clsObj.arms?.length && !clsObj.arms.includes(arm))
+      return fail(res, 400, `Arm "${arm}" does not exist in "${cls}".`);
 
-  if (gender && !VALID_GENDERS.includes(gender))
-    return fail(res, 400, `gender must be one of: ${VALID_GENDERS.join(', ')}.`);
+    const id = rawId ? String(rawId).trim() : generateStudentId();
+    const existing = await db.query1('SELECT id FROM students WHERE id = ?', [id]);
+    if (existing) return fail(res, 409, `Student ID "${id}" already exists.`);
 
-  // Class + arm validation
-  const clsObj = db.findClass(cls);
-  if (!clsObj) return fail(res, 400, `Class "${cls}" does not exist.`);
-  if (clsObj.arms && !clsObj.arms.includes(arm))
-    return fail(res, 400, `Arm "${arm}" does not exist in "${cls}". Valid arms: ${clsObj.arms.join(', ')}.`);
+    let attn = 100;
+    if (attendance != null) {
+      try { attn = parseAttendance(attendance); } catch (e) { return fail(res, 400, e.message); }
+    }
 
-  const id = rawId ? String(rawId).trim() : generateStudentId();
+    await db.run(
+      `INSERT INTO students (id, name, class_id, arm, gender, dob, parent, phone, attendance, active, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')`,
+      [id, String(name).trim(), clsObj.id, arm, gender, dob || null, parent || '', phone || '', attn]
+    );
 
-  if ((db.students || []).find(s => s.id === id))
-    return fail(res, 409, `Student ID "${id}" already exists.`);
-
-  let attn = 100;
-  if (attendance != null) {
-    try { attn = parseAttendance(attendance); } catch (e) { return fail(res, 400, e.message); }
-  }
-
-  const student = {
-    id,
-    name:       String(name).trim(),
-    class:      cls,
-    arm,
-    gender:     gender ?? 'Male',
-    dob:        dob    ?? '',
-    parent:     parent ?? '',
-    phone:      phone  ?? '',
-    attendance: attn,
-    active:     true,
-  };
-
-  if (!db.students) db.students = [];
-  db.students.push(student);
-  return ok(res, student, {}, 201);
-};
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   POST /api/students/bulk
-   Body: { class*, arm*, students: [{ name*, gender?, dob?, parent?, phone? }] }
-   Mirrors apiBulkAddStudents() in api-bridge.js.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.bulkCreate = (req, res) => {
-  const { class: cls, arm, students: rows } = req.body ?? {};
-  if (!cls || !arm)    return fail(res, 400, 'class and arm are required.');
-  if (!Array.isArray(rows) || !rows.length) return fail(res, 400, 'students must be a non-empty array.');
-  if (rows.length > 200) return fail(res, 400, 'Bulk import is limited to 200 students per request.');
-
-  const clsObj = db.findClass(cls);
-  if (!clsObj) return fail(res, 400, `Class "${cls}" does not exist.`);
-  if (clsObj.arms && !clsObj.arms.includes(arm))
-    return fail(res, 400, `Arm "${arm}" does not exist in "${cls}". Valid arms: ${clsObj.arms.join(', ')}.`);
-
-  if (!db.students) db.students = [];
-  const created = [], skipped = [];
-
-  rows.forEach((row, i) => {
-    const name = String(row.name ?? '').trim();
-    if (!name) { skipped.push({ row: i + 1, reason: 'name is required.' }); return; }
-
-    const gender = row.gender ?? 'Male';
-    if (!VALID_GENDERS.includes(gender)) { skipped.push({ row: i + 1, reason: `Invalid gender "${gender}".` }); return; }
-
-    const id = generateStudentId();
-    const student = {
-      id, name, class: cls, arm, gender,
-      dob:        row.dob    ?? '',
-      parent:     row.parent ?? '',
-      phone:      row.phone  ?? '',
-      attendance: 100,
-      active:     true,
-    };
+    const student = { id, name: String(name).trim(), class: cls, arm, gender,
+      dob: dob || '', parent: parent || '', phone: phone || '', attendance: attn, active: true, status: 'active' };
     db.students.push(student);
-    created.push(student);
-  });
 
-  return ok(res, created, { imported: created.length, skipped: skipped.length, errors: skipped }, 201);
+    return ok(res, student, {}, 201);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   PUT /api/students/:id
-═══════════════════════════════════════════════════════════════════════════ */
-exports.update = (req, res) => {
-  const student = db.findStudent(req.params.id);
-  if (!student) return fail(res, 404, 'Student not found.');
+/* ── POST /api/students/bulk ────────────────────────────────────────────── */
+exports.bulkCreate = async (req, res) => {
+  try {
+    const { class: cls, arm, students: rows } = req.body ?? {};
+    if (!cls || !arm) return fail(res, 400, 'class and arm are required.');
+    if (!Array.isArray(rows) || !rows.length) return fail(res, 400, 'students must be a non-empty array.');
+    if (rows.length > 200) return fail(res, 400, 'Max 200 students per bulk request.');
 
-  const { class: cls, arm, gender, attendance, name, dob, parent, phone } = req.body ?? {};
+    const clsObj = db.findClass(cls);
+    if (!clsObj) return fail(res, 400, `Class "${cls}" does not exist.`);
 
-  const newClass = cls ?? student.class;
-  const newArm   = arm ?? student.arm;
+    const created = [], skipped = [];
 
-  if (cls || arm) {
-    const clsObj = db.findClass(newClass);
-    if (!clsObj) return fail(res, 400, `Class "${newClass}" does not exist.`);
-    if (clsObj.arms && !clsObj.arms.includes(newArm))
-      return fail(res, 400, `Arm "${newArm}" does not exist in "${newClass}". Valid arms: ${clsObj.arms.join(', ')}.`);
-  }
+    for (let i = 0; i < rows.length; i++) {
+      const row  = rows[i];
+      const name = String(row.name ?? '').trim();
+      if (!name) { skipped.push({ row: i + 1, reason: 'name required' }); continue; }
+      const gender = row.gender ?? 'Male';
+      if (!VALID_GENDERS.includes(gender)) { skipped.push({ row: i + 1, reason: `invalid gender "${gender}"` }); continue; }
 
-  if (gender && !VALID_GENDERS.includes(gender))
-    return fail(res, 400, `gender must be one of: ${VALID_GENDERS.join(', ')}.`);
+      const id = generateStudentId();
+      try {
+        await db.run(
+          `INSERT INTO students (id, name, class_id, arm, gender, dob, parent, phone, attendance, active, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 100, 1, 'active')`,
+          [id, name, clsObj.id, arm, gender, row.dob || null, row.parent || '', row.phone || '']
+        );
+        const s = { id, name, class: cls, arm, gender, dob: row.dob || '',
+                    parent: row.parent || '', phone: row.phone || '', attendance: 100, active: true, status: 'active' };
+        db.students.push(s);
+        created.push(s);
+      } catch (e) {
+        skipped.push({ row: i + 1, reason: e.message });
+      }
+    }
 
-  const patch = {};
-  if (name  != null) patch.name       = String(name).trim();
-  if (cls   != null) patch.class      = cls;
-  if (arm   != null) patch.arm        = arm;
-  if (gender != null) patch.gender    = gender;
-  if (dob   != null) patch.dob        = dob;
-  if (parent != null) patch.parent    = String(parent).trim();
-  if (phone  != null) patch.phone     = String(phone).trim();
-  if (attendance != null) {
-    try { patch.attendance = parseAttendance(attendance); } catch (e) { return fail(res, 400, e.message); }
-  }
-
-  Object.assign(student, patch);
-  return ok(res, student);
+    return ok(res, created, { imported: created.length, skipped: skipped.length, errors: skipped }, 201);
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   PATCH /api/students/:id/transfer
-   Body: { class, arm }
-   Mirrors apiTransferStudent() in api-bridge.js.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.transfer = (req, res) => {
-  const student = db.findStudent(req.params.id);
-  if (!student) return fail(res, 404, 'Student not found.');
+/* ── PUT /api/students/:id ──────────────────────────────────────────────── */
+exports.update = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = await db.query1(`SELECT s.*, c.name AS class_name FROM students s
+      LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = ?`, [id]);
+    if (!row) return fail(res, 404, 'Student not found.');
 
-  // Accept both class/class_id field names
-  const cls = req.body.class || req.body.class_id;
-  const arm = req.body.arm   || req.body.new_arm;
-  if (!cls || !arm) return fail(res, 400, 'class and arm are required for transfer.');
+    const { name, class: cls, arm, gender, dob, parent, phone, attendance } = req.body ?? {};
+    let classId = row.class_id;
+    let className = row.class_name;
 
-  const clsObj = db.findClass(cls);
-  if (!clsObj) return fail(res, 400, `Class "${cls}" does not exist.`);
-  if (clsObj.arms && !clsObj.arms.includes(arm))
-    return fail(res, 400, `Arm "${arm}" does not exist in "${cls}". Valid arms: ${clsObj.arms.join(', ')}.`);
+    if (cls && cls !== row.class_name) {
+      const clsObj = db.findClass(cls);
+      if (!clsObj) return fail(res, 400, `Class "${cls}" does not exist.`);
+      classId = clsObj.id; className = cls;
+    }
 
-  if (student.class === cls && student.arm === arm)
-    return fail(res, 400, `Student is already in ${cls} ${arm}.`);
+    const newArm    = arm    ?? row.arm;
+    const newName   = name   ?? row.name;
+    const newGender = gender ?? row.gender;
+    const newDob    = dob    ?? row.dob;
+    const newParent = parent ?? row.parent;
+    const newPhone  = phone  ?? row.phone;
+    let   newAttn   = parseFloat(row.attendance);
+    if (attendance != null) {
+      try { newAttn = parseAttendance(attendance); } catch (e) { return fail(res, 400, e.message); }
+    }
 
-  const from   = `${student.class} ${student.arm}`;
-  student.class = cls;
-  student.arm   = arm;
+    await db.run(
+      `UPDATE students SET name=?, class_id=?, arm=?, gender=?, dob=?, parent=?, phone=?, attendance=?
+       WHERE id=?`,
+      [newName, classId, newArm, newGender, newDob || null, newParent, newPhone, newAttn, id]
+    );
 
-  return ok(res, student, { message: `${student.name} transferred from ${from} → ${cls} ${arm}.` });
+    const cached = db.findStudent(id);
+    if (cached) Object.assign(cached, { name: newName, class: className, arm: newArm,
+      gender: newGender, dob: newDob || '', parent: newParent, phone: newPhone, attendance: newAttn });
+
+    return ok(res, { id, name: newName, class: className, arm: newArm, gender: newGender,
+      dob: newDob, parent: newParent, phone: newPhone, attendance: newAttn });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   PATCH /api/students/:id/attendance
-   Body: { attendance: 0–100 }
-═══════════════════════════════════════════════════════════════════════════ */
-exports.updateAttendance = (req, res) => {
-  const student = db.findStudent(req.params.id);
-  if (!student) return fail(res, 404, 'Student not found.');
+/* ── PATCH /api/students/:id/transfer ──────────────────────────────────── */
+exports.transfer = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { class: newCls, arm: newArm } = req.body ?? {};
+    if (!newCls || !newArm) return fail(res, 400, 'class and arm are required.');
 
-  if (req.user.role === 'Teacher' && !teacherCanAccess(req, res, student)) return;
+    const row = await db.query1('SELECT * FROM students WHERE id = ?', [id]);
+    if (!row) return fail(res, 404, 'Student not found.');
 
-  const { attendance } = req.body ?? {};
-  if (attendance == null) return fail(res, 400, 'attendance is required.');
+    const clsObj = db.findClass(newCls);
+    if (!clsObj) return fail(res, 400, `Class "${newCls}" does not exist.`);
 
-  let attn;
-  try { attn = parseAttendance(attendance); } catch (e) { return fail(res, 400, e.message); }
+    await db.run('UPDATE students SET class_id=?, arm=? WHERE id=?', [clsObj.id, newArm, id]);
 
-  student.attendance = attn;
-  return ok(res, student);
+    const cached = db.findStudent(id);
+    if (cached) { cached.class = newCls; cached.arm = newArm; }
+
+    return ok(res, { id, class: newCls, arm: newArm, previousClass: row.class_id, transferred: true });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   PATCH /api/students/:id/status
-   Body: { status: 'active'|'suspended'|'graduated'|'withdrawn'|'transferred' }
-   Matches API.Students.setStatus() in api.js.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.setStatus = (req, res) => {
-  const { status } = req.body ?? {};
-  if (!status || !VALID_STATUSES.includes(status))
-    return fail(res, 400, `status must be one of: ${VALID_STATUSES.join(', ')}.`);
+/* ── PATCH /api/students/:id/attendance ─────────────────────────────────── */
+exports.updateAttendance = async (req, res) => {
+  try {
+    const { id } = req.params;
+    let attn;
+    try { attn = parseAttendance(req.body?.attendance); } catch (e) { return fail(res, 400, e.message); }
 
-  const student = db.findStudent(req.params.id);
-  if (!student) return fail(res, 404, 'Student not found.');
+    const row = await db.query1('SELECT id FROM students WHERE id = ?', [id]);
+    if (!row) return fail(res, 404, 'Student not found.');
 
-  student.active = (status === 'active');
-  student.status = status;
-  return ok(res, student);
+    await db.run('UPDATE students SET attendance=? WHERE id=?', [attn, id]);
+    const cached = db.findStudent(id);
+    if (cached) cached.attendance = attn;
+
+    return ok(res, { id, attendance: attn });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   DELETE /api/students/:id
-   Soft-deletes; cascades to results.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.remove = (req, res) => {
-  const student = db.findStudent(req.params.id);
-  if (!student) return fail(res, 404, 'Student not found.');
+/* ── PATCH /api/students/:id/status ────────────────────────────────────── */
+exports.setStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body ?? {};
+    if (!VALID_STATUSES.includes(status)) return fail(res, 400, `Invalid status "${status}".`);
 
-  student.active = false;
-  student.status = 'withdrawn';
+    const row = await db.query1('SELECT id FROM students WHERE id = ?', [id]);
+    if (!row) return fail(res, 404, 'Student not found.');
 
-  const before = (db.results || []).length;
-  if (db.results) {
-    db.results.splice(0, db.results.length,
-      ...db.results.filter(r => r.studentId !== student.id));
-  }
-  const removed = before - (db.results || []).length;
+    const active = status === 'active' ? 1 : 0;
+    await db.run('UPDATE students SET status=?, active=? WHERE id=?', [status, active, id]);
+    const cached = db.findStudent(id);
+    if (cached) { cached.status = status; cached.active = !!active; }
 
-  return ok(res, student, {
-    message: `"${student.name}" deactivated with ${removed} result record(s) removed.`,
-    resultsRemoved: removed,
-  });
+    return ok(res, { id, status, active: !!active });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/students/export
-   Query: class, arm, sessionId, format (csv)
-   Column order matches exportStudentsCSV() in api-bridge.js.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.exportStudents = (req, res) => {
-  const { class: cls, arm } = req.query;
+/* ── DELETE /api/students/:id ───────────────────────────────────────────── */
+exports.remove = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = await db.query1('SELECT id, name FROM students WHERE id = ?', [id]);
+    if (!row) return fail(res, 404, 'Student not found.');
 
-  let list = (db.students || []).filter(s => s.active !== false);
-  if (cls) list = list.filter(s => s.class === cls);
-  if (arm) list = list.filter(s => s.arm   === arm);
+    await db.run('DELETE FROM students WHERE id = ?', [id]);
+    db.students = db.students.filter(s => s.id !== id);
 
-  const headers = ['Student ID', 'Name', 'Class', 'Arm', 'Gender', 'DOB', 'Parent', 'Phone', 'Attendance %'];
-  const rows    = list.map(s => [s.id, s.name, s.class, s.arm, s.gender, s.dob ?? '', s.parent ?? '', s.phone ?? '', s.attendance ?? 0]);
-
-  const csv = [headers, ...rows]
-    .map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))
-    .join('\r\n');
-
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="students_export.csv"');
-  return res.send('\uFEFF' + csv);
+    return ok(res, { id, deleted: true, name: row.name });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/students/:id/results
-   Query: termId, sessionId, subjectId
-   Used by viewStudent profile Results tab and parent portal.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getResults = (req, res) => {
-  const student = db.findStudent(req.params.id);
-  if (!student) return fail(res, 404, 'Student not found.');
+/* ── GET /api/students/export ───────────────────────────────────────────── */
+exports.exportStudents = async (req, res) => {
+  try {
+    const { class: cls, arm } = req.query;
+    let sql = `SELECT s.*, c.name AS class_name FROM students s
+               LEFT JOIN classes c ON c.id = s.class_id WHERE 1=1`;
+    const params = [];
+    if (cls) { sql += ' AND c.name = ?'; params.push(cls); }
+    if (arm) { sql += ' AND s.arm = ?';  params.push(arm); }
+    sql += ' ORDER BY c.name, s.arm, s.name';
 
-  if (req.user.role === 'Parent' && req.user.wardId !== student.id) return fail(res, 403, 'Access denied.');
-  if (req.user.role === 'Teacher' && !teacherCanAccess(req, res, student)) return;
+    const rows = await db.query(sql, params);
+    const lines = ['ID,Name,Class,Arm,Gender,DOB,Parent,Phone,Attendance'];
+    rows.forEach(s => lines.push(
+      [s.id, s.name, s.class_name, s.arm, s.gender,
+       s.dob || '', s.parent || '', s.phone || '', s.attendance].join(',')
+    ));
 
-  const { termId, sessionId, subjectId } = req.query;
-
-  let results = (db.results || []).filter(r => r.studentId === student.id);
-  if (termId)    results = results.filter(r => r.term    === termId    || r.termId    === termId);
-  if (sessionId) results = results.filter(r => r.session === sessionId || r.sessionId === sessionId);
-  if (subjectId) results = results.filter(r => r.subject === subjectId || r.subjectId === subjectId);
-
-  return ok(res, results, { total: results.length });
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="students.csv"');
+    return res.send(lines.join('\n'));
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/students/:id/attendance
-   Query: termId, sessionId
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getAttendance = (req, res) => {
-  const student = db.findStudent(req.params.id);
-  if (!student) return fail(res, 404, 'Student not found.');
-
-  if (req.user.role === 'Parent' && req.user.wardId !== student.id) return fail(res, 403, 'Access denied.');
-  if (req.user.role === 'Teacher' && !teacherCanAccess(req, res, student)) return;
-
-  const { termId, sessionId } = req.query;
-  let records = (db.attendance || []).filter(r => r.studentId === student.id);
-  if (termId)    records = records.filter(r => r.term    === termId    || r.termId    === termId);
-  if (sessionId) records = records.filter(r => r.session === sessionId || r.sessionId === sessionId);
-
-  const p   = records.filter(r => (r.status || '').toLowerCase() === 'p').length;
-  const a   = records.filter(r => (r.status || '').toLowerCase() === 'a').length;
-  const l   = records.filter(r => (r.status || '').toLowerCase() === 'l').length;
-  const e   = records.filter(r => (r.status || '').toLowerCase() === 'e').length;
-  const pct = records.length ? parseFloat((p / records.length * 100).toFixed(1)) : null;
-
-  return ok(res, records, {
-    total: records.length,
-    summary: { present: p, absent: a, late: l, excused: e, attendancePct: pct },
-  });
+/* ── GET /api/students/:id/results ─────────────────────────────────────── */
+exports.getResults = async (req, res) => {
+  try {
+    const { term, session } = req.query;
+    const rows = await db.query(
+      `SELECT * FROM results WHERE student_id=?${term ? ' AND term=?' : ''}${session ? ' AND session=?' : ''} ORDER BY subject_name`,
+      [req.params.id, ...(term ? [term] : []), ...(session ? [session] : [])]
+    );
+    return ok(res, rows, { count: rows.length });
+  } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GET /api/students/:id/report-card
-   Query: termId*
-   Assembles the full data payload used by renderSingleReportCard() /
-   _renderParentReportCard() in script3.js.
-═══════════════════════════════════════════════════════════════════════════ */
-exports.getReportCard = (req, res) => {
-  const student = db.findStudent(req.params.id);
-  if (!student) return fail(res, 404, 'Student not found.');
+/* ── GET /api/students/:id/attendance ───────────────────────────────────── */
+exports.getAttendance = async (req, res) => {
+  try {
+    const { term, session } = req.query;
+    const rows = await db.query(
+      `SELECT * FROM attendance WHERE student_id=?${term ? ' AND term=?' : ''}${session ? ' AND session=?' : ''} ORDER BY date`,
+      [req.params.id, ...(term ? [term] : []), ...(session ? [session] : [])]
+    );
+    const counts = { p: 0, l: 0, a: 0, e: 0 };
+    rows.forEach(r => { if (counts[r.status] !== undefined) counts[r.status]++; });
+    return ok(res, rows, { counts });
+  } catch (e) { return fail(res, 500, e.message); }
+};
 
-  if (req.user.role === 'Parent' && req.user.wardId !== student.id) return fail(res, 403, 'Access denied.');
-  if (req.user.role === 'Teacher' && !teacherCanAccess(req, res, student)) return;
+/* ── GET /api/students/:id/report-card ─────────────────────────────────── */
+exports.getReportCard = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { term, session } = req.query;
+    const [sRows, results, remark, domain, attRows] = await Promise.all([
+      db.query(`SELECT s.*, c.name AS class_name FROM students s
+                LEFT JOIN classes c ON c.id=s.class_id WHERE s.id=?`, [id]),
+      db.query('SELECT * FROM results WHERE student_id=? AND term=? AND session=? ORDER BY subject_name',
+               [id, term, session]),
+      db.query1('SELECT * FROM report_card_remarks WHERE student_id=? AND term=? AND session=?',
+                [id, term, session]),
+      db.query1('SELECT * FROM domain_assessments WHERE student_id=? AND term=? AND session=?',
+                [id, term, session]),
+      db.query('SELECT status, COUNT(*) AS cnt FROM attendance WHERE student_id=? AND term=? AND session=? GROUP BY status',
+               [id, term, session]),
+    ]);
 
-  const { termId } = req.query;
-  if (!termId) return fail(res, 400, 'termId is required.');
+    if (!sRows.length) return fail(res, 404, 'Student not found.');
+    const s = sRows[0];
 
-  // Determine session from the term record (if available)
-  const term    = db.terms ? db.terms.find(t => t.id === termId || t.name === termId) : null;
-  const session = term?.session || (db.schoolInfo && db.schoolInfo.current_session) || '';
+    const total = results.reduce((a, r) => a + r.total, 0);
+    const avg   = results.length ? parseFloat((total / results.length).toFixed(1)) : 0;
+    const att   = {};
+    attRows.forEach(r => { att[r.status] = Number(r.cnt); });
 
-  const results = (db.results || []).filter(r =>
-    r.studentId === student.id &&
-    (r.term === termId || r.term === term?.name)
-  );
-
-  const remark = (db.remarks || []).find(r =>
-    r.studentId === student.id &&
-    (r.term === termId || r.term === term?.name) &&
-    (!session || r.session === session)
-  ) || { teacherRemark: '', principalRemark: '' };
-
-  const domain = (db.domainAssessments || []).find(d =>
-    d.studentId === student.id &&
-    (d.term === termId || d.term === term?.name)
-  ) || {};
-
-  // Class position
-  const classmates = (db.students || []).filter(s => s.class === student.class && s.arm === student.arm && s.active !== false);
-  const scored = classmates.map(s => {
-    const rr = (db.results || []).filter(r => r.studentId === s.id && (r.term === termId || r.term === term?.name));
-    return { id: s.id, avg: rr.length ? rr.reduce((a, r) => a + (r.total || 0), 0) / rr.length : 0 };
-  }).sort((a, b) => b.avg - a.avg);
-  const posIdx  = scored.findIndex(s => s.id === student.id);
-  const ordinal = n => { const sfx = ['th','st','nd','rd'], v = n % 100; return n + (sfx[(v-20)%10] || sfx[v] || sfx[0]); };
-  const position = posIdx < 0 ? 'N/A' : `${ordinal(posIdx + 1)} / ${classmates.length}`;
-
-  const subjectCount = results.length;
-  const totalScore   = results.reduce((s, r) => s + (r.total || 0), 0);
-  const average      = subjectCount ? parseFloat((totalScore / subjectCount).toFixed(1)) : null;
-
-  return ok(res, {
-    student,
-    term:   termId,
-    session,
-    results,
-    remark,
-    domain,
-    position,
-    summary: { subjectCount, totalScore, average },
-    schoolInfo: db.schoolInfo || {},
-  });
+    return ok(res, {
+      student:    { id: s.id, name: s.name, class: s.class_name, arm: s.arm, gender: s.gender, dob: s.dob },
+      results, average: avg, totalScore: total,
+      remark:     remark || {},
+      domain:     domain || {},
+      attendance: { present: att.p || 0, late: att.l || 0, absent: att.a || 0, excused: att.e || 0 },
+      schoolInfo: db.schoolInfo,
+    });
+  } catch (e) { return fail(res, 500, e.message); }
 };
