@@ -23,15 +23,14 @@ const crypto = require('crypto');
 const db     = require('../db');
 
 // ── Environment guards ────────────────────────────────────────────────────────
-
-const JWT_SECRET         = process.env.JWT_SECRET;
+const JWT_SECRET         = process.env.JWT_ACCESS_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET ?? JWT_SECRET + '_refresh';
-const JWT_EXPIRES_IN     = process.env.JWT_EXPIRES_IN     ?? '15m';
-const REFRESH_EXPIRES_IN = process.env.REFRESH_EXPIRES_IN ?? '7d';
+const JWT_EXPIRES_IN     = process.env.JWT_ACCESS_EXP     ?? '7d';
+const REFRESH_EXPIRES_IN = process.env.JWT_REFRESH_EXP    ?? '7d';
 const IS_PROD            = process.env.NODE_ENV === 'production';
 const SALT_ROUNDS        = 10;
 
-if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable is not set.');
+if (!JWT_SECRET) throw new Error('JWT_ACCESS_SECRET environment variable is not set.');
 
 // ── In-memory stores (replace with Redis / DB in production) ──────────────────
 

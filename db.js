@@ -27,16 +27,16 @@ const mysql = require('mysql2/promise');
 /* ─── connection pool ────────────────────────────────────────── */
 
 const pool = mysql.createPool({
-  host:               process.env.DB_HOST     || 'srv1234.hstgr.io',
+  host:               process.env.DB_HOST     || 'auth-db1777.hstgr.io',
   port:               parseInt(process.env.DB_PORT || '3306', 10),
-  user:               process.env.DB_USER     || 'root',
-  password:           process.env.DB_PASS     || process.env.DB_PASSWORD || 'SAHARCO1957abadiocese',
-  database:           process.env.DB_NAME     || 'u156099858_shcaba_db',
+  user:               process.env.DB_USER     || 'u156099858_schaba',
+  password:           process.env.DB_PASS     || process.env.DB_PASSWORD || 'Saharco2024x',
+  database:           process.env.DB_NAME     || 'u156099858_schaba_db',
   waitForConnections: true,
   connectionLimit:    parseInt(process.env.DB_POOL_MAX || '10', 10),
   queueLimit:         0,
   decimalNumbers:     true,
-  dateStrings:        true,   // DATE columns stay as 'YYYY-MM-DD' strings
+  dateStrings:        true,
   timezone:           '+00:00',
 });
 
