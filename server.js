@@ -7,12 +7,13 @@
 
 require('dotenv').config();
 
-const express  = require('express');
-const cors     = require('cors');
-const helmet   = require('helmet');
-const morgan   = require('morgan');
-const session  = require('express-session');
-const db       = require('./config/db');
+const express    = require('express');
+const cors       = require('cors');
+const helmet     = require('helmet');
+const morgan     = require('morgan');
+const session    = require('express-session');
+const MySQLStore = require('express-mysql-session')(session);
+const db         = require('./config/db');
 
 const app  = express();
 const PORT = process.env.PORT || 5000;
@@ -68,12 +69,24 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(morgan(ENV === 'production' ? 'combined' : 'dev'));
 
 /* ─────────────────────────────────────────────────────────────
-   SESSION
+   SESSION  (MySQL-backed — no MemoryStore in production)
 ───────────────────────────────────────────────────────────── */
+const sessionStore = new MySQLStore({
+  host:                    process.env.DB_HOST,
+  port:                    parseInt(process.env.DB_PORT || '3306', 10),
+  user:                    process.env.DB_USER,
+  password:                process.env.DB_PASS,
+  database:                process.env.DB_NAME,
+  clearExpired:            true,
+  checkExpirationInterval: 15 * 60 * 1000,   // prune expired rows every 15 min
+  expiration:               8 * 60 * 60 * 1000,
+});
+
 app.use(
   session({
     name:              'shc_sid',
     secret:            process.env.SESSION_SECRET || 'shc_dev_secret_change_in_prod',
+    store:             sessionStore,
     resave:            false,
     saveUninitialized: false,
     cookie: {
@@ -133,7 +146,6 @@ app.use('/api/reforms',       require('./routes/reforms'));
 app.use('/api/report-cards',  require('./routes/reportCard'));
 app.use('/api/notifications', require('./routes/notification'));
 app.use('/api/access-tokens', require('./routes/accesstoken'));
-
 app.use('/api/timetable',     require('./routes/timetable'));
 app.use('/api/admin/settings',require('./routes/admin'));
 // Portal + check-result last — its catch-all must not swallow other routes

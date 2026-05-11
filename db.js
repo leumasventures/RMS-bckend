@@ -30,7 +30,7 @@ const pool = mysql.createPool({
   host:               process.env.DB_HOST     || 'auth-db1777.hstgr.io',
   port:               parseInt(process.env.DB_PORT || '3306', 10),
   user:               process.env.DB_USER     || 'u156099858_schaba',
-  password:           process.env.DB_PASS     || process.env.DB_PASSWORD || 'Saharco2024x',
+  password:           process.env.DB_PASS     || process.env.DB_PASSWORD || 'SAHARCO1957abadiocese',
   database:           process.env.DB_NAME     || 'u156099858_schaba_db',
   waitForConnections: true,
   connectionLimit:    parseInt(process.env.DB_POOL_MAX || '10', 10),
