@@ -14,8 +14,11 @@
 const jwt = require('jsonwebtoken');
 const db  = require('../config/db');
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable is not set.');
+// FIX: authController.js signs tokens with JWT_ACCESS_SECRET.
+// The middleware must verify with the same secret.
+// Support both names so existing deployments with JWT_SECRET still work.
+const JWT_SECRET = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error('JWT_ACCESS_SECRET (or JWT_SECRET) environment variable is not set.');
 
 // ── authenticate ──────────────────────────────────────────────────────────────
 

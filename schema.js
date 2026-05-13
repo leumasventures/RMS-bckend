@@ -246,6 +246,38 @@ const tables = [
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 
+/* ── Staff Credentials ── (queried by staffController) */
+`CREATE TABLE IF NOT EXISTS staff_credentials (
+  id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  staff_id    VARCHAR(20) NOT NULL,
+  file_name   VARCHAR(255) NOT NULL,
+  file_size   INT UNSIGNED DEFAULT NULL,
+  file_type   VARCHAR(80)  DEFAULT NULL,
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
+/* ── Class Subject Allocations ── (queried by resultController) */
+`CREATE TABLE IF NOT EXISTS class_subject_allocations (
+  id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  class_id   INT UNSIGNED NOT NULL,
+  arm        VARCHAR(10)  NOT NULL,
+  subject_id INT UNSIGNED NOT NULL,
+  UNIQUE KEY uniq_class_arm_subj (class_id, arm, subject_id),
+  FOREIGN KEY (class_id)   REFERENCES classes(id)  ON DELETE CASCADE,
+  FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
+/* ── Student Subject Allocations ── (queried by resultController) */
+`CREATE TABLE IF NOT EXISTS student_subject_allocations (
+  id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  student_id VARCHAR(30)  NOT NULL,
+  subject_id INT UNSIGNED NOT NULL,
+  UNIQUE KEY uniq_student_subj (student_id, subject_id),
+  FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+  FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
 ];
 
 (async () => {
