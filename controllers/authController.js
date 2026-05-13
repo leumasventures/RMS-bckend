@@ -173,10 +173,11 @@ exports.login = async (req, res) => {
   if (!email || !password)
     return fail(res, 400, 'Email and password are required.');
 
-  const user = db.findUserByEmail(String(email));
+  // Fetch full user row including password_hash (not in in-memory cache)
+  const user = await db.getUserWithPassword(String(email));
 
   // Always run bcrypt to prevent timing-based user enumeration
-  const hashToCheck = user ? user.passwordHash : BCRYPT_DUMMY_HASH;
+  const hashToCheck = user ? (user.password_hash || user.passwordHash || '') : BCRYPT_DUMMY_HASH;
   const passwordOk  = await bcrypt.compare(String(password), hashToCheck);
 
   if (!user || !passwordOk) {
@@ -281,15 +282,18 @@ exports.changePassword = async (req, res) => {
   if (currentPassword === newPassword)
     return fail(res, 400, 'New password must be different from the current password.');
 
-  const user = db.findUserById(req.user.id);
+  const user = await db.getUserById(req.user.id);
   if (!user) return fail(res, 404, 'User not found.');
 
-  const match = await bcrypt.compare(String(currentPassword), user.passwordHash);
+  // Fetch full row (with password_hash) for comparison
+  const fullUser = await db.getUserWithPassword(user.email);
+  const storedHash = fullUser ? (fullUser.password_hash || fullUser.passwordHash || '') : '';
+  const match = await bcrypt.compare(String(currentPassword), storedHash);
   if (!match)
     return fail(res, 401, 'Current password is incorrect.');
 
-  user.passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
-  user.updatedAt    = new Date().toISOString();
+  const newHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+  await db.run('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, user.id]);
 
   // Invalidate all existing refresh tokens for this user (force re-login)
   for (const [token, data] of _refreshTokens) {
@@ -346,12 +350,12 @@ exports.resetPassword = async (req, res) => {
     return fail(res, 400, 'This reset link is invalid or has expired. Please request a new one.');
   }
 
-  const user = db.findUserById(record.userId);
+  const user = await db.getUserById(record.userId);
   if (!user || !user.active)
     return fail(res, 404, 'Account not found or deactivated.');
 
-  user.passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
-  user.updatedAt    = new Date().toISOString();
+  const newHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+  await db.run('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, user.id]);
 
   // Single-use: mark token as consumed
   record.used = true;

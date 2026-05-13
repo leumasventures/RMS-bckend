@@ -2,28 +2,46 @@
 /**
  * schema.js — run once to create all tables
  * Usage: node schema.js
+ *
+ * FIXES applied (vs original):
+ *  1. `settings`      → renamed to `school_settings` (setting_key / setting_value columns)
+ *  2. `classes`       → removed JSON `arms` column; added separate `class_arms` table
+ *  3. `students`      → renamed `class_name` → `class_id` (INT FK); added `active` + `address`
+ *  4. `users`         → added staff_id, student_id, assigned_class, assigned_arm,
+ *                        ward_id, active; renamed `password` → `password_hash`
+ *  5. `results`       → renamed `class_name`→`class_id`, `subject`→`subject_name`,
+ *                        added `subject_id`; fixed UNIQUE key to use `subject_name`
+ *  6. `report_card_remarks` → added (was missing; queried by studentController)
+ *  7. `fee_structure` → added (queried by db.sync())
+ *  8. `attendance`    → added `term` column; changed status ENUM to p/a/l/e codes
+ *  9. `staff`         → renamed `class_unit` → `class_id` (FK)
  */
 require('dotenv').config();
 const pool = require('./db');
 
 const tables = [
 
-/* ── Settings (key-value store for school info, grading, etc.) ── */
-`CREATE TABLE IF NOT EXISTS settings (
-  \`key\`       VARCHAR(200) NOT NULL PRIMARY KEY,
-  \`value\`     LONGTEXT,
-  updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+/* ── School Settings (key-value store) ── */
+`CREATE TABLE IF NOT EXISTS school_settings (
+  setting_key    VARCHAR(200) NOT NULL PRIMARY KEY,
+  setting_value  LONGTEXT,
+  updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 
 /* ── Users ── */
 `CREATE TABLE IF NOT EXISTS users (
-  id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  name        VARCHAR(120) NOT NULL,
-  email       VARCHAR(160) UNIQUE,
-  role        ENUM('Admin','Teacher','Student','Parent','Staff') NOT NULL DEFAULT 'Teacher',
-  password    VARCHAR(255) NOT NULL,
-  status      ENUM('active','suspended','disabled') DEFAULT 'active',
-  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+  id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  staff_id        VARCHAR(20)  DEFAULT NULL,
+  student_id      VARCHAR(30)  DEFAULT NULL,
+  name            VARCHAR(120) NOT NULL,
+  email           VARCHAR(160) UNIQUE,
+  role            ENUM('Admin','Teacher','Student','Parent','Staff') NOT NULL DEFAULT 'Teacher',
+  password_hash   VARCHAR(255) NOT NULL,
+  assigned_class  VARCHAR(60)  DEFAULT NULL,
+  assigned_arm    VARCHAR(10)  DEFAULT NULL,
+  ward_id         VARCHAR(30)  DEFAULT NULL,
+  active          TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 
 /* ── Classes ── */
@@ -31,29 +49,40 @@ const tables = [
   id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   name        VARCHAR(60) NOT NULL UNIQUE,
   level       VARCHAR(40) DEFAULT 'Junior',
-  arms        JSON,
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
+/* ── Class Arms (one row per arm per class) ── */
+`CREATE TABLE IF NOT EXISTS class_arms (
+  id        INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  class_id  INT UNSIGNED NOT NULL,
+  arm       VARCHAR(10)  NOT NULL,
+  UNIQUE KEY uniq_class_arm (class_id, arm),
+  FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 
 /* ── Students ── */
 `CREATE TABLE IF NOT EXISTS students (
-  id            VARCHAR(30) NOT NULL PRIMARY KEY,
+  id            VARCHAR(30)  NOT NULL PRIMARY KEY,
   name          VARCHAR(120) NOT NULL,
-  class_name    VARCHAR(60),
+  class_id      INT UNSIGNED DEFAULT NULL,
   arm           VARCHAR(10),
   gender        ENUM('Male','Female','Other') DEFAULT 'Male',
   dob           DATE,
   parent        VARCHAR(120),
   phone         VARCHAR(20),
+  address       VARCHAR(255),
   attendance    TINYINT UNSIGNED DEFAULT 100,
+  active        TINYINT(1) NOT NULL DEFAULT 1,
   status        VARCHAR(20) DEFAULT 'active',
   created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 
 /* ── Staff / Teachers ── */
 `CREATE TABLE IF NOT EXISTS staff (
-  id            VARCHAR(20) NOT NULL PRIMARY KEY,
+  id            VARCHAR(20)  NOT NULL PRIMARY KEY,
   name          VARCHAR(120) NOT NULL,
   gender        VARCHAR(10),
   phone         VARCHAR(20),
@@ -64,14 +93,15 @@ const tables = [
   position      VARCHAR(80),
   department    VARCHAR(80),
   subject       VARCHAR(80),
-  class_unit    VARCHAR(60),
+  class_id      INT UNSIGNED DEFAULT NULL,
   arm           VARCHAR(10),
   qualification VARCHAR(60),
   experience    VARCHAR(60),
   notes         TEXT,
   credentials   JSON,
   created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 
 /* ── Subjects ── */
@@ -85,25 +115,35 @@ const tables = [
   UNIQUE KEY  uniq_name (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 
-/* ── Results ── */
-`CREATE TABLE IF NOT EXISTS results (
+/* ── Fee Structure ── */
+`CREATE TABLE IF NOT EXISTS fee_structure (
   id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  student_id  VARCHAR(30) NOT NULL,
-  class_name  VARCHAR(60),
-  arm         VARCHAR(10),
-  subject     VARCHAR(80) NOT NULL,
-  term        VARCHAR(30) NOT NULL,
-  session     VARCHAR(20) NOT NULL,
-  ca          TINYINT UNSIGNED DEFAULT 0,
-  exam        TINYINT UNSIGNED DEFAULT 0,
-  total       TINYINT UNSIGNED GENERATED ALWAYS AS (ca + exam) STORED,
-  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY  uniq_result (student_id, subject, term, session)
+  label       VARCHAR(120) NOT NULL,
+  amount      DECIMAL(10,2) NOT NULL DEFAULT 0,
+  level       VARCHAR(40) DEFAULT 'All',
+  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
 
-/* ── Remarks ── */
-`CREATE TABLE IF NOT EXISTS remarks (
+/* ── Results ── */
+`CREATE TABLE IF NOT EXISTS results (
+  id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  student_id   VARCHAR(30)  NOT NULL,
+  class_id     INT UNSIGNED DEFAULT NULL,
+  arm          VARCHAR(10),
+  subject_id   INT UNSIGNED DEFAULT NULL,
+  subject_name VARCHAR(80)  NOT NULL,
+  term         VARCHAR(30)  NOT NULL,
+  session      VARCHAR(20)  NOT NULL,
+  ca           TINYINT UNSIGNED DEFAULT 0,
+  exam         TINYINT UNSIGNED DEFAULT 0,
+  total        TINYINT UNSIGNED GENERATED ALWAYS AS (ca + exam) STORED,
+  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY   uniq_result (student_id, subject_name, term, session)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
+/* ── Report Card Remarks ── */
+`CREATE TABLE IF NOT EXISTS report_card_remarks (
   id                INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   student_id        VARCHAR(30) NOT NULL,
   term              VARCHAR(30) NOT NULL,
@@ -118,11 +158,13 @@ const tables = [
 `CREATE TABLE IF NOT EXISTS attendance (
   id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   student_id  VARCHAR(30) NOT NULL,
-  class_name  VARCHAR(60),
+  class_id    INT UNSIGNED DEFAULT NULL,
   arm         VARCHAR(10),
   session     VARCHAR(20) NOT NULL,
+  term        VARCHAR(30) NOT NULL DEFAULT '',
   date        DATE NOT NULL,
-  status      ENUM('present','absent','late','excused') DEFAULT 'present',
+  status      ENUM('p','a','l','e') DEFAULT 'p'
+               COMMENT 'p=present a=absent l=late e=excused',
   saved_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY  uniq_att (student_id, date, session)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
@@ -220,7 +262,7 @@ const tables = [
     if (row.cnt === 0) {
       const hash = await bcrypt.hash('admin1234', 10);
       await pool.query(
-        'INSERT INTO users (name, email, role, password) VALUES (?, ?, ?, ?)',
+        'INSERT INTO users (name, email, role, password_hash) VALUES (?, ?, ?, ?)',
         ['SAHARCO Admin', 'admin@sacredheartcollegeaba.com', 'Admin', hash]
       );
       console.log('\n  👤 Default admin created:');
@@ -238,7 +280,7 @@ const tables = [
     ];
     for (const pair of defaultSettings) {
       await pool.query(
-        'INSERT INTO settings (`key`, `value`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `key`=`key`',
+        'INSERT INTO school_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_key=setting_key',
         [pair[0], pair[1]]
       );
     }

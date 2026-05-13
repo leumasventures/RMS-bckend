@@ -48,10 +48,16 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ message: 'Internal server error.' });
 });
 
+const db   = require('./config/db');
 const PORT = process.env.PORT || 5002;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`\n🚀 SHC API running on port ${PORT}`);
   console.log(`   Health: http://localhost:${PORT}/api/health\n`);
+  try {
+    await db.sync();
+  } catch (err) {
+    console.error('[db] sync failed — check DB credentials and run schema.js first:', err.message);
+  }
 });
 
 module.exports = app;
