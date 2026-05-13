@@ -201,7 +201,9 @@ exports.login = async (req, res) => {
   setAccessCookie(res, accessToken);
   setRefreshCookie(res, refreshToken);
 
-  return ok(res, { user: safeUser(user) });
+  // Also return the token in the response body so cross-origin frontends
+  // (where HttpOnly cookies can't be sent) can store it in localStorage
+  return ok(res, { user: safeUser(user), token: accessToken });
 };
 
 /**
@@ -262,7 +264,7 @@ exports.refreshToken = (req, res) => {
   setAccessCookie(res, newAccess);
   setRefreshCookie(res, newRefresh);
 
-  return ok(res, { user: safeUser(user) });
+  return ok(res, { user: safeUser(user), token: newAccess });
 };
 
 /**
