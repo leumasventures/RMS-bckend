@@ -8,20 +8,11 @@ const path         = require('path');
 
 const app = express();
 
-/* ── CORS — allow multiple frontend origins with credentials ── */
-const ALLOWED_ORIGINS = (
-  process.env.FRONTEND_ORIGIN ||
-  'https://sacredheartcollegeaba.com,https://leumasventures.github.io,http://localhost:3000,http://localhost:5500,http://127.0.0.1:5500'
-).split(',').map(o => o.trim());
-
+/* ── CORS ── */
 app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true); // curl, Postman, mobile apps
-    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-    cb(new Error(`CORS: origin '${origin}' not allowed.`));
-  },
+  origin: true,
   credentials: true,
-  methods:     ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
@@ -40,7 +31,7 @@ app.use('/api/auth',       require('./routes/auth'));
 app.use('/api/classes',    require('./routes/classes'));
 app.use('/api/students',   require('./routes/students'));
 app.use('/api/staff',      require('./routes/staff'));
-app.use('/api/teachers',   require('./routes/staff'));   // alias
+app.use('/api/teachers',   require('./routes/staff'));
 app.use('/api/subjects',   require('./routes/subjects'));
 app.use('/api/results',    require('./routes/results'));
 app.use('/api/attendance', require('./routes/attendance'));
@@ -54,7 +45,7 @@ app.use((_req, res) => res.status(404).json({ message: 'Route not found.' }));
 /* ── Global error handler ── */
 app.use((err, _req, res, _next) => {
   console.error('Unhandled error:', err);
-  res.status(500).json({ message: 'Internal server error.' });
+  res.status(500).json({ message: err.message || 'Internal server error.' });
 });
 
 const db   = require('./config/db');
@@ -65,7 +56,7 @@ app.listen(PORT, async () => {
   try {
     await db.sync();
   } catch (err) {
-    console.error('[db] sync failed — check DB credentials and run schema.js first:', err.message);
+    console.error('[db] sync failed:', err.message);
   }
 });
 
