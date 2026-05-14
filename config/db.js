@@ -40,13 +40,7 @@ const pool = mysql.createPool({
   timezone:           '+00:00',
 });
 
-// TEMP: remove after confirming connection works
-console.log('[db] connecting with:', {
-  host:     process.env.DB_HOST,
-  user:     process.env.DB_USER,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASS ? '****' : 'MISSING',
-});
+
 
 /* ─── internal query helpers ─────────────────────────────────── */
 

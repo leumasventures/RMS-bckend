@@ -8,9 +8,18 @@ const path         = require('path');
 
 const app = express();
 
-/* ── CORS — allow your frontend origin with credentials ── */
+/* ── CORS — allow multiple frontend origins with credentials ── */
+const ALLOWED_ORIGINS = (
+  process.env.FRONTEND_ORIGIN ||
+  'https://sacredheartcollegeaba.com,https://leumasventures.github.io,http://localhost:3000,http://localhost:5500,http://127.0.0.1:5500'
+).split(',').map(o => o.trim());
+
 app.use(cors({
-  origin:      process.env.FRONTEND_ORIGIN || 'https://sacredheartcollegeaba.com',
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // curl, Postman, mobile apps
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin '${origin}' not allowed.`));
+  },
   credentials: true,
   methods:     ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],

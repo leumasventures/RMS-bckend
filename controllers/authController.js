@@ -20,7 +20,7 @@
 const bcrypt = require('bcryptjs');
 const jwt    = require('jsonwebtoken');
 const crypto = require('crypto');
-const db     = require('../db');
+const db     = require('../config/db');
 
 // ── Environment guards ────────────────────────────────────────────────────────
 const JWT_SECRET         = process.env.JWT_ACCESS_SECRET;
