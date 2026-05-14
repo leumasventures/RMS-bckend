@@ -1,565 +1,407 @@
 'use strict';
 
 /**
- * seed.js — Sacred Heart College
- * ─────────────────────────────────────────────────────────────
- * Populates every in-memory collection with realistic data so
- * you can test every API endpoint immediately after boot.
+ * seed.js — Sacred Heart College Eziukwu Aba (SAHARCO)
+ * ─────────────────────────────────────────────────────
+ * Writes ALL seed data directly to the MySQL database.
+ * Replaces both the old in-memory seed.js and seed_admin.js.
  *
  * Run:  node seed.js
- *
- * NOTE: Because db.js uses in-memory arrays (not a real DB),
- *       this script prints a summary and a sample token to stdout.
- *       When you switch to MySQL/Postgres, replace the array
- *       mutations below with INSERT queries or ORM calls.
- * ─────────────────────────────────────────────────────────────
+ * Reset & re-seed:  node seed.js --fresh
  */
 
 require('dotenv').config();
+const mysql  = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
-const db     = require('./db');
 
-/* ═══════════════════════════════════════════
-   HELPERS
-═══════════════════════════════════════════ */
-const log  = (msg)        => console.log(`  ✔  ${msg}`);
-const warn = (msg)        => console.log(`  ⚠  ${msg}`);
-const hr   = ()           => console.log('─'.repeat(52));
+const SESSION = '2025/2026';
+const TERM    = 'Second Term';
+const TODAY   = new Date().toISOString().slice(0, 10);
+
+const log  = (msg) => console.log(`  ✔  ${msg}`);
+const hr   = ()    => console.log('─'.repeat(52));
 const pad  = (n, len = 3) => String(n).padStart(len, '0');
-
 function rnd(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function pick(arr)      { return arr[Math.floor(Math.random() * arr.length)]; }
-function isoDate(d)     { return d.toISOString().slice(0, 10); }
 
-const TODAY    = isoDate(new Date());
-const SESSION  = '2025/2026';
-const TERM     = 'Second Term';
-
-/* ═══════════════════════════════════════════
-   1. CLEAR ALL MUTABLE COLLECTIONS
-      (static refs like classes/subjects stay)
-═══════════════════════════════════════════ */
-function clearCollections() {
-  hr();
-  console.log('  Clearing existing mutable data…');
-
-  // Keep first 3 seed users (admin, teacher, parent) but remove rest
-  db.users.splice(3);
-  db.students.splice(0);
-  db.teachers.splice(0);
-  db.admissions.splice(0);
-  db.attendance.splice(0);
-  db.reForms.splice(0);
-  db.results.splice(0);
-  db.parentTokens.splice(0);
-
-  log('Collections cleared');
-}
-
-/* ═══════════════════════════════════════════
-   2. USERS
-═══════════════════════════════════════════ */
-function seedUsers() {
-  hr();
-  console.log('  Seeding users…');
-
-  const extraUsers = [
-    { name: 'Mr Chidi Okafor',   email: 'chidi@shc.edu.ng',          role: 'Teacher', password: 'Teacher123!', assignedClass: 'JSS 2', assignedArm: 'B' },
-    { name: 'Mrs Adaora Nwosu',  email: 'adaora@shc.edu.ng',          role: 'Teacher', password: 'Teacher123!', assignedClass: 'SS 2',  assignedArm: 'A' },
-    { name: 'Mr Emeka Ibe',      email: 'emeka.ibe@shc.edu.ng',        role: 'Teacher', password: 'Teacher123!', assignedClass: 'JSS 1', assignedArm: 'A' },
-    { name: 'Mrs Chinelo Dike',  email: 'chinelo@shc.edu.ng',          role: 'Teacher', password: 'Teacher123!', assignedClass: 'SS 3',  assignedArm: 'A' },
-    { name: 'Mr Uche Parent',    email: 'uche.parent@gmail.com',       role: 'Parent',  password: 'Parent123!',  wardId: 'SHC/002' },
-    { name: 'Mrs Ifeanyi Parent',email: 'ifeanyi.parent@gmail.com',    role: 'Parent',  password: 'Parent123!',  wardId: 'SHC/004' },
-  ];
-
-  extraUsers.forEach((u, i) => {
-    db.users.push({
-      id:            db.users.length + 1,
-      name:          u.name,
-      email:         u.email,
-      passwordHash:  bcrypt.hashSync(u.password, 10),
-      role:          u.role,
-      assignedClass: u.assignedClass || null,
-      assignedArm:   u.assignedArm   || null,
-      ...(u.wardId ? { wardId: u.wardId } : {}),
-    });
+async function main() {
+  const pool = mysql.createPool({
+    host:            process.env.DB_HOST,
+    user:            process.env.DB_USER,
+    password:        process.env.DB_PASS || process.env.DB_PASSWORD,
+    database:        process.env.DB_NAME,
+    ssl:             { rejectUnauthorized: false },
+    waitForConnections: true,
+    connectionLimit: 5,
   });
 
-  log(`${db.users.length} users total (${db.users.filter(u => u.role === 'Teacher').length} teachers, ${db.users.filter(u => u.role === 'Parent').length} parents, 1 admin)`);
-}
+  const q = (sql, params = []) => pool.query(sql, params);
 
-/* ═══════════════════════════════════════════
-   3. TEACHERS
-═══════════════════════════════════════════ */
-function seedTeachers() {
-  hr();
-  console.log('  Seeding teachers…');
-
-  const teachers = [
-    {
-      id: 'TCH/001', name: 'Mrs Ngozi Eze',     email: 'ngozi@shc.edu.ng',
-      phone: '08011112222', gender: 'Female', qualification: 'B.Ed Mathematics',
-      subjects: ['Mathematics', 'Further Maths'],
-      assignedClass: 'SS 1', assignedArm: 'A',
-      isFormTeacher: true, formClass: 'SS 1', formArm: 'A',
-      employmentDate: '2018-09-01', status: 'Active',
-    },
-    {
-      id: 'TCH/002', name: 'Mr Chidi Okafor',   email: 'chidi@shc.edu.ng',
-      phone: '08022223333', gender: 'Male', qualification: 'B.Sc English, PGDE',
-      subjects: ['English Language', 'Literature'],
-      assignedClass: 'JSS 2', assignedArm: 'B',
-      isFormTeacher: true, formClass: 'JSS 2', formArm: 'B',
-      employmentDate: '2019-01-15', status: 'Active',
-    },
-    {
-      id: 'TCH/003', name: 'Mrs Adaora Nwosu',  email: 'adaora@shc.edu.ng',
-      phone: '08033334444', gender: 'Female', qualification: 'B.Sc Biology',
-      subjects: ['Biology', 'Agricultural Sci.'],
-      assignedClass: 'SS 2', assignedArm: 'A',
-      isFormTeacher: true, formClass: 'SS 2', formArm: 'A',
-      employmentDate: '2020-09-01', status: 'Active',
-    },
-    {
-      id: 'TCH/004', name: 'Mr Emeka Ibe',       email: 'emeka.ibe@shc.edu.ng',
-      phone: '08044445555', gender: 'Male', qualification: 'B.Ed Chemistry, PGDE',
-      subjects: ['Chemistry', 'Physics'],
-      assignedClass: 'JSS 1', assignedArm: 'A',
-      isFormTeacher: true, formClass: 'JSS 1', formArm: 'A',
-      employmentDate: '2021-09-01', status: 'Active',
-    },
-    {
-      id: 'TCH/005', name: 'Mrs Chinelo Dike',   email: 'chinelo@shc.edu.ng',
-      phone: '08055556666', gender: 'Female', qualification: 'B.A Economics',
-      subjects: ['Economics', 'Accounting', 'Government'],
-      assignedClass: 'SS 3', assignedArm: 'A',
-      isFormTeacher: true, formClass: 'SS 3', formArm: 'A',
-      employmentDate: '2017-09-01', status: 'Active',
-    },
-    {
-      id: 'TCH/006', name: 'Mr Obiora Nwachukwu', email: 'obiora@shc.edu.ng',
-      phone: '08066667777', gender: 'Male', qualification: 'B.Sc Computer Science',
-      subjects: ['Computer Studies', 'Basic Technology'],
-      assignedClass: null, assignedArm: null,
-      isFormTeacher: false, formClass: null, formArm: null,
-      employmentDate: '2022-01-10', status: 'Active',
-    },
-    {
-      id: 'TCH/007', name: 'Miss Ifeoma Osei',   email: 'ifeoma@shc.edu.ng',
-      phone: '08077778888', gender: 'Female', qualification: 'B.A French & Linguistics',
-      subjects: ['French', 'Civic Education', 'CRS / MRS'],
-      assignedClass: null, assignedArm: null,
-      isFormTeacher: false, formClass: null, formArm: null,
-      employmentDate: '2023-09-01', status: 'Active',
-    },
-  ];
-
-  teachers.forEach(t => db.teachers.push(t));
-  log(`${db.teachers.length} teachers seeded`);
-}
-
-/* ═══════════════════════════════════════════
-   4. STUDENTS  (60 students across all classes)
-═══════════════════════════════════════════ */
-function seedStudents() {
-  hr();
-  console.log('  Seeding students…');
-
-  const firstNames = {
-    Female: ['Adaeze','Chidinma','Blessing','Ngozi','Amara','Chisom','Adaora','Ifeoma','Nneka','Chinwe','Obiageli','Ujunwa','Olachi','Kelechi','Ebele'],
-    Male:   ['Chukwuemeka','Ifeanyi','Tochukwu','Obinna','Emeka','Kelechi','Chidi','Uche','Nnamdi','Chibuike','Onyekachi','Ikenna','Ugochukwu','Somto','Ebuka'],
-  };
-  const lastNames = ['Okonkwo','Eze','Nwosu','Okafor','Chukwu','Ani','Uche','Obi','Nwankwo','Obiora','Anyanwu','Ibe','Dike','Nwachukwu','Osei','Nduka','Orji','Igwe','Mbah','Agu'];
-  const streets   = ['Aba Road','Ngwa Street','Pound Road','Factory Road','Eziukwu','Cemetery Road','Okigwe Road','Warehouse Road','Jubilee Road','St Michael Road','Umuola Road','Aba-Owerri Rd','Mission Hill','Port Harcourt Rd','Ikot Ekpene Rd'];
-
-  // class/arm distribution — 10 students per class, spread across arms
-  const classArms = [
-    ...Array(10).fill(null).map((_,i) => ({ cls: 'JSS 1', arm: ['A','A','A','A','B','B','B','C','C','C'][i] })),
-    ...Array(10).fill(null).map((_,i) => ({ cls: 'JSS 2', arm: ['A','A','A','B','B','B','B','C','C','C'][i] })),
-    ...Array( 8).fill(null).map((_,i) => ({ cls: 'JSS 3', arm: ['A','A','A','A','B','B','B','B'][i]         })),
-    ...Array(12).fill(null).map((_,i) => ({ cls: 'SS 1',  arm: ['A','A','A','A','A','B','B','B','C','C','C','C'][i] })),
-    ...Array(12).fill(null).map((_,i) => ({ cls: 'SS 2',  arm: ['A','A','A','A','A','B','B','B','C','C','C','C'][i] })),
-    ...Array( 8).fill(null).map((_,i) => ({ cls: 'SS 3',  arm: ['A','A','A','A','B','B','B','B'][i]         })),
-  ];
-
-  classArms.forEach(({ cls, arm }, i) => {
-    const gender    = i % 2 === 0 ? 'Female' : 'Male';
-    const firstName = firstNames[gender][i % firstNames[gender].length];
-    const lastName  = lastNames[i % lastNames.length];
-    const dobYear   = cls.startsWith('JSS') ? rnd(2009, 2013) : rnd(2005, 2009);
-    const studentId = `SHC/${pad(i + 1)}`;
-
-    db.students.push({
-      id:          studentId,
-      name:        `${firstName} ${lastName}`,
-      class:       cls,
-      arm,
-      gender,
-      dob:         `${dobYear}-${pad(rnd(1,12),2)}-${pad(rnd(1,28),2)}`,
-      parentPhone: `080${rnd(10000000, 99999999)}`,
-      address:     `${rnd(1, 60)} ${pick(streets)}, Aba`,
-      attendance:  rnd(60, 100),
-    });
-  });
-
-  log(`${db.students.length} students seeded across ${db.classes.length} classes`);
-}
-
-/* ═══════════════════════════════════════════
-   5. RESULTS  (realistic scores for SS 1 A & JSS 2 B, two terms)
-═══════════════════════════════════════════ */
-function seedResults() {
-  hr();
-  console.log('  Seeding results…');
-
-  function gradeOf(total) {
-    if (total >= 70) return { letter: 'A', remark: 'Excellent' };
-    if (total >= 60) return { letter: 'B', remark: 'Very Good' };
-    if (total >= 50) return { letter: 'C', remark: 'Good'      };
-    if (total >= 45) return { letter: 'D', remark: 'Pass'      };
-    if (total >= 40) return { letter: 'E', remark: 'Weak Pass' };
-    return                   { letter: 'F', remark: 'Fail'     };
-  }
-
-  const targetGroups = [
-    { cls: 'SS 1',  arm: 'A', subjects: ['Mathematics','English Language','Biology','Chemistry','Physics','Economics','Government','Literature','CRS / MRS'] },
-    { cls: 'JSS 2', arm: 'B', subjects: ['Mathematics','English Language','Social Studies','Basic Technology','Agricultural Sci.','Computer Studies','French','Civic Education','CRS / MRS'] },
-    { cls: 'SS 2',  arm: 'A', subjects: ['Mathematics','English Language','Biology','Chemistry','Physics','Economics','Accounting','Government','Geography'] },
-  ];
-
-  const terms = ['First Term', 'Second Term'];
-
-  let count = 0;
-  targetGroups.forEach(({ cls, arm, subjects }) => {
-    const students = db.students.filter(s => s.class === cls && s.arm === arm);
-    terms.forEach(term => {
-      students.forEach(student => {
-        subjects.forEach(subject => {
-          const ca   = rnd(15, 40);
-          const exam = rnd(20, 60);
-          const total = Math.min(ca + exam, 100);
-          db.results.push({
-            id:        db.nextId(),
-            studentId: student.id,
-            class:     cls,
-            arm,
-            subject,
-            term,
-            session:   SESSION,
-            ca,
-            exam,
-            total,
-            ...gradeOf(total),
-          });
-          count++;
-        });
-      });
-    });
-  });
-
-  log(`${count} result records seeded`);
-}
-
-/* ═══════════════════════════════════════════
-   6. ATTENDANCE  (last 10 school days for SS 1 A)
-═══════════════════════════════════════════ */
-function seedAttendance() {
-  hr();
-  console.log('  Seeding attendance…');
-
-  // Generate last 10 weekdays
-  const schoolDays = [];
-  const d = new Date();
-  while (schoolDays.length < 10) {
-    d.setDate(d.getDate() - 1);
-    if (d.getDay() !== 0 && d.getDay() !== 6) schoolDays.push(isoDate(new Date(d)));
-  }
-  schoolDays.reverse(); // oldest first
-
-  const targetStudents = db.students.filter(s => s.class === 'SS 1' && s.arm === 'A');
-  const statuses       = ['Present','Present','Present','Present','Present','Present','Late','Absent','Excused','Present'];
-  let   count          = 0;
-
-  schoolDays.forEach(date => {
-    targetStudents.forEach((student, i) => {
-      const status = statuses[(i + count) % statuses.length];
-      db.attendance.push({
-        id:        db.nextId(),
-        studentId: student.id,
-        class:     'SS 1',
-        arm:       'A',
-        date,
-        term:      TERM,
-        session:   SESSION,
-        status,
-        markedBy:  'TCH/001',
-        remarks:   status === 'Absent' ? 'No prior notice' : status === 'Late' ? 'Arrived 10 mins late' : '',
-      });
-      count++;
-    });
-  });
-
-  // Also seed 5 days for JSS 2 B
-  const jssStudents = db.students.filter(s => s.class === 'JSS 2' && s.arm === 'B');
-  schoolDays.slice(0, 5).forEach(date => {
-    jssStudents.forEach((student, i) => {
-      db.attendance.push({
-        id:        db.nextId(),
-        studentId: student.id,
-        class:     'JSS 2',
-        arm:       'B',
-        date,
-        term:      TERM,
-        session:   SESSION,
-        status:    statuses[i % statuses.length],
-        markedBy:  'TCH/002',
-        remarks:   '',
-      });
-    });
-  });
-
-  // Update student.attendance % from records
-  db.students.forEach(student => {
-    const records = db.attendance.filter(a => a.studentId === student.id);
-    if (!records.length) return;
-    const present = records.filter(a => ['Present','Late'].includes(a.status)).length;
-    student.attendance = parseFloat((present / records.length * 100).toFixed(1));
-  });
-
-  log(`${db.attendance.length} attendance records seeded`);
-}
-
-/* ═══════════════════════════════════════════
-   7. ADMISSIONS
-═══════════════════════════════════════════ */
-function seedAdmissions() {
-  hr();
-  console.log('  Seeding admissions…');
-
-  const applicants = [
-    { name: 'Chibuike Onyema',  dob: '2011-04-12', gender: 'Male',   pName: 'Mr Onyema Chibuike',  phone: '08044445555', email: 'onyema@gmail.com',       addr: '10 Aba Road, Aba',       cls: 'JSS 1', prev: 'Community Primary School Aba',         status: 'Pending',  aCls: null,   aArm: null, admAt: null,         notes: '' },
-    { name: 'Adanna Obi',       dob: '2008-09-20', gender: 'Female', pName: 'Mrs Obi Adanna',       phone: '08055556666', email: 'obi.adanna@gmail.com',    addr: '7 Eziukwu Road, Aba',    cls: 'SS 1',  prev: 'Govt Secondary School Aba',            status: 'Approved', aCls: 'SS 1', aArm: 'B',  admAt: '2025-12-10', notes: 'Transfer student. Good academic record.' },
-    { name: 'Kelechi Osuji',    dob: '2012-02-18', gender: 'Male',   pName: 'Mr Osuji Kelechi',     phone: '08066667777', email: 'osuji@gmail.com',         addr: '44 Ngwa Road, Aba',      cls: 'JSS 1', prev: 'Sacred Heart Primary School',          status: 'Approved', aCls: 'JSS 1',aArm: 'C',  admAt: '2026-01-05', notes: 'Excellent entrance exam score.' },
-    { name: 'Olachi Mbah',      dob: '2009-07-30', gender: 'Female', pName: 'Mrs Mbah Olachi',      phone: '08077778888', email: 'mbah@gmail.com',          addr: '3 Factory Road, Aba',    cls: 'JSS 3', prev: 'St Francis Secondary School',          status: 'Pending',  aCls: null,   aArm: null, admAt: null,         notes: 'Awaiting transfer documents.' },
-    { name: 'Somto Igwe',       dob: '2007-11-05', gender: 'Male',   pName: 'Mr Igwe Somto',        phone: '08088889999', email: 'igwe.somto@gmail.com',    addr: '88 Port Harcourt Rd, Aba',cls: 'SS 2',  prev: 'Community Secondary School',           status: 'Rejected', aCls: null,   aArm: null, admAt: null,         notes: 'Failed entrance assessment.' },
-    { name: 'Ebele Orji',       dob: '2006-05-22', gender: 'Female', pName: 'Mrs Orji Ebele',       phone: '08099990000', email: 'orji@gmail.com',          addr: '12 Ikot Ekpene Rd, Aba', cls: 'SS 2',  prev: 'Federal Government College Port Harcourt',status: 'Enrolled',aCls: 'SS 2', aArm: 'B',  admAt: '2026-01-10', notes: 'Top of her previous class.' },
-  ];
-
-  applicants.forEach((a, i) => {
-    const year = SESSION.split('/')[1];
-    db.admissions.push({
-      id:                db.nextId(),
-      applicationNo:     `ADM/${year}/${pad(i + 1)}`,
-      applicantName:     a.name,
-      dob:               a.dob,
-      gender:            a.gender,
-      parentName:        a.pName,
-      parentPhone:       a.phone,
-      parentEmail:       a.email,
-      address:           a.addr,
-      applyingForClass:  a.cls,
-      previousSchool:    a.prev,
-      session:           SESSION,
-      status:            a.status,
-      appliedAt:         '2025-11-' + pad(rnd(1, 28), 2),
-      admittedAt:        a.admAt,
-      assignedStudentId: a.status === 'Enrolled' ? `SHC/${pad(db.students.length + i + 1)}` : null,
-      assignedClass:     a.aCls,
-      assignedArm:       a.aArm,
-      notes:             a.notes,
-    });
-  });
-
-  log(`${db.admissions.length} admission records seeded (${db.admissions.filter(a=>a.status==='Pending').length} pending, ${db.admissions.filter(a=>a.status==='Approved').length} approved, ${db.admissions.filter(a=>a.status==='Enrolled').length} enrolled, ${db.admissions.filter(a=>a.status==='Rejected').length} rejected)`);
-}
-
-/* ═══════════════════════════════════════════
-   8. RE-REGISTRATION FORMS
-═══════════════════════════════════════════ */
-function seedReForms() {
-  hr();
-  console.log('  Seeding re-registration forms…');
-
-  // Grab some students to use
-  const ss3Students  = db.students.filter(s => s.class === 'SS 3').slice(0, 4);
-  const ss2Students  = db.students.filter(s => s.class === 'SS 2').slice(0, 3);
-  const jss3Students = db.students.filter(s => s.class === 'JSS 3').slice(0, 2);
-  const jss1Student  = db.students.filter(s => s.class === 'JSS 1')[0];
-
-  const forms = [
-    // SS 3 students re-registering for final year
-    ...ss3Students.map((s, i) => ({
-      studentId:   s.id,
-      type:        'ReRegistration',
-      fromClass:   'SS 3', fromArm: s.arm,
-      toClass:     'SS 3', toArm:   s.arm,
-      fromSession: '2024/2025', toSession: SESSION,
-      term:        'First Term',
-      status:      i < 3 ? 'Approved' : 'Pending',
-      initiatedBy: 1, approvedBy: i < 3 ? 1 : null,
-      initiatedAt: '2025-09-01',
-      approvedAt:  i < 3 ? '2025-09-03' : null,
-      notes:       i < 3 ? 'Annual re-registration confirmed.' : 'Awaiting parent payment.',
-    })),
-    // SS 2 → SS 3 promotions
-    ...ss2Students.map((s, i) => ({
-      studentId:   s.id,
-      type:        'Promotion',
-      fromClass:   'SS 2', fromArm: s.arm,
-      toClass:     'SS 3', toArm:   s.arm,
-      fromSession: '2024/2025', toSession: SESSION,
-      term:        'First Term',
-      status:      'Approved',
-      initiatedBy: 1, approvedBy: 1,
-      initiatedAt: '2025-09-01',
-      approvedAt:  '2025-09-02',
-      notes:       'Promoted based on cumulative results.',
-    })),
-    // JSS 3 → JSS 3 re-reg (one approved, one pending)
-    ...jss3Students.map((s, i) => ({
-      studentId:   s.id,
-      type:        'ReRegistration',
-      fromClass:   'JSS 3', fromArm: s.arm,
-      toClass:     'JSS 3', toArm:   s.arm,
-      fromSession: '2024/2025', toSession: SESSION,
-      term:        'First Term',
-      status:      i === 0 ? 'Approved' : 'Pending',
-      initiatedBy: 1, approvedBy: i === 0 ? 1 : null,
-      initiatedAt: '2025-09-01',
-      approvedAt:  i === 0 ? '2025-09-04' : null,
-      notes:       '',
-    })),
-    // Demotion example
-    {
-      studentId:   ss2Students[0]?.id || db.students[0].id,
-      type:        'Demotion',
-      fromClass:   'SS 3', fromArm: 'A',
-      toClass:     'SS 2', toArm:   'A',
-      fromSession: '2024/2025', toSession: SESSION,
-      term:        'First Term',
-      status:      'Approved',
-      initiatedBy: 1, approvedBy: 1,
-      initiatedAt: '2025-09-05',
-      approvedAt:  '2025-09-07',
-      notes:       'Poor performance in SS 3 trial exams.',
-    },
-    // Transfer out example
-    {
-      studentId:   jss1Student?.id || db.students[0].id,
-      type:        'TransferOut',
-      fromClass:   jss1Student?.class || 'JSS 1', fromArm: jss1Student?.arm || 'A',
-      toClass:     jss1Student?.class || 'JSS 1', toArm:   jss1Student?.arm || 'A',
-      fromSession: SESSION, toSession: SESSION,
-      term:        TERM,
-      status:      'Pending',
-      initiatedBy: 1, approvedBy: null,
-      initiatedAt: TODAY,
-      approvedAt:  null,
-      notes:       'Family relocating to Lagos.',
-    },
-  ];
-
-  forms.forEach((f, i) => {
-    const prefix = { ReRegistration:'REG', Promotion:'PRO', Demotion:'DEM', TransferOut:'TRO', TransferIn:'TRI' }[f.type] || 'REF';
-    const year   = SESSION.split('/')[1];
-    db.reForms.push({
-      id:  db.nextId(),
-      refNo: `${prefix}/${year}/${pad(i + 1)}`,
-      ...f,
-    });
-  });
-
-  log(`${db.reForms.length} re-form records seeded`);
-}
-
-/* ═══════════════════════════════════════════
-   9. PARENT TOKENS  (report-card access tokens)
-═══════════════════════════════════════════ */
-function seedParentTokens() {
-  hr();
-  console.log('  Seeding parent tokens…');
-
-  const ss1AStudents = db.students.filter(s => s.class === 'SS 1' && s.arm === 'A').slice(0, 5);
-
-  ss1AStudents.forEach((student, i) => {
-    const token = `SHC-PRC-${SESSION.replace('/','-')}-${pad(student.id.split('/')[1], 6)}`;
-    db.parentTokens.push({
-      token,
-      studentId: student.id,
-      session:   SESSION,
-      term:      TERM,
-      createdAt: TODAY,
-      expiresAt: `${parseInt(SESSION.split('/')[1]) + 1}-03-31`,
-    });
-  });
-
-  log(`${db.parentTokens.length} parent tokens seeded`);
-}
-
-/* ═══════════════════════════════════════════
-   10. SUMMARY
-═══════════════════════════════════════════ */
-function printSummary() {
-  hr();
-  console.log('\n  📊  SEED SUMMARY');
-  hr();
-  console.log(`  Users        : ${db.users.length}`);
-  console.log(`  Teachers     : ${db.teachers.length}`);
-  console.log(`  Students     : ${db.students.length}`);
-  console.log(`  Results      : ${db.results.length}`);
-  console.log(`  Attendance   : ${db.attendance.length}`);
-  console.log(`  Admissions   : ${db.admissions.length}`);
-  console.log(`  Re-Forms     : ${db.reForms.length}`);
-  console.log(`  Parent Tokens: ${db.parentTokens.length}`);
-  hr();
-
-  console.log('\n  🔑  TEST CREDENTIALS');
-  hr();
-  console.log('  Role      Email                         Password');
-  console.log('  ────────  ────────────────────────────  ────────────');
-  console.log('  Admin     admin@shc.edu.ng              Admin1234!');
-  console.log('  Teacher   ngozi@shc.edu.ng              Teacher123!');
-  console.log('  Teacher   chidi@shc.edu.ng              Teacher123!');
-  console.log('  Parent    okonkwo.parent@gmail.com      Parent123!');
-  hr();
-
-  if (db.parentTokens.length) {
-    console.log('\n  🎫  SAMPLE PARENT REPORT CARD TOKEN');
-    hr();
-    console.log(`  Student  : ${db.students.find(s => s.id === db.parentTokens[0].studentId)?.name}`);
-    console.log(`  Token    : ${db.parentTokens[0].token}`);
-    console.log(`  Use at   : GET /api/results/report-card/${db.parentTokens[0].studentId}`);
-    hr();
-  }
-
-  console.log('\n  ✅  Seed complete. Run: npm run dev\n');
-}
-
-/* ═══════════════════════════════════════════
-   MAIN
-═══════════════════════════════════════════ */
-function seed() {
   console.log('\n╔══════════════════════════════════════════════════╗');
   console.log('║   Sacred Heart College — Database Seed Script   ║');
   console.log('╚══════════════════════════════════════════════════╝');
 
+  const fresh = process.argv.includes('--fresh');
+
   try {
-    clearCollections();
-    seedUsers();
-    seedTeachers();
-    seedStudents();
-    seedResults();
-    seedAttendance();
-    seedAdmissions();
-    seedReForms();
-    seedParentTokens();
-    printSummary();
-    process.exit(0);
+
+    /* ── 1. SCHOOL SETTINGS ─────────────────────────────────── */
+    hr();
+    console.log('  Seeding school settings…');
+    const settings = [
+      ['school_name',     'Sacred Heart College Eziukwu Aba'],
+      ['current_session', SESSION],
+      ['current_term',    TERM],
+      ['principal_name',  'Rev. Fr. Sullivan Obinna Achilihu'],
+      ['school_address',  'Eziukwu Road, Aba, Abia State'],
+      ['school_phone',    '08012345678'],
+      ['school_email',    'admin@sacredheartcollegeaba.com'],
+      ['school_motto',    'Truth and Knowledge'],
+    ];
+    for (const [k, v] of settings) {
+      await q(
+        `INSERT INTO school_settings (setting_key, setting_value)
+         VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
+        [k, v]
+      );
+    }
+    log('School settings seeded');
+
+    /* ── 2. CLASSES ─────────────────────────────────────────── */
+    hr();
+    console.log('  Seeding classes…');
+    if (fresh) await q('DELETE FROM classes');
+    const classData = [
+      { name: 'JSS 1', level: 'Junior' },
+      { name: 'JSS 2', level: 'Junior' },
+      { name: 'JSS 3', level: 'Junior' },
+      { name: 'SS 1',  level: 'Senior' },
+      { name: 'SS 2',  level: 'Senior' },
+      { name: 'SS 3',  level: 'Senior' },
+    ];
+    const classIds = {};
+    for (const cls of classData) {
+      await q(
+        `INSERT INTO classes (name, level) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE level = VALUES(level)`,
+        [cls.name, cls.level]
+      );
+      const [[row]] = await q('SELECT id FROM classes WHERE name = ?', [cls.name]);
+      classIds[cls.name] = row.id;
+    }
+    log(`${classData.length} classes seeded`);
+
+    /* ── 3. CLASS ARMS ──────────────────────────────────────── */
+    hr();
+    console.log('  Seeding class arms…');
+    const armData = {
+      'JSS 1': ['A','B','C'], 'JSS 2': ['A','B','C'], 'JSS 3': ['A','B'],
+      'SS 1':  ['A','B','C'], 'SS 2':  ['A','B','C'], 'SS 3':  ['A','B'],
+    };
+    let armCount = 0;
+    for (const [cls, arms] of Object.entries(armData)) {
+      for (const arm of arms) {
+        await q(
+          `INSERT INTO class_arms (class_id, arm) VALUES (?, ?)
+           ON DUPLICATE KEY UPDATE arm = arm`,
+          [classIds[cls], arm]
+        );
+        armCount++;
+      }
+    }
+    log(`${armCount} arms seeded`);
+
+    /* ── 4. SUBJECTS ────────────────────────────────────────── */
+    hr();
+    console.log('  Seeding subjects…');
+    const subjectData = [
+      { name: 'Mathematics',        code: 'MTH', level: 'All',    type: 'Core' },
+      { name: 'English Language',   code: 'ENG', level: 'All',    type: 'Core' },
+      { name: 'Biology',            code: 'BIO', level: 'Senior', type: 'Core' },
+      { name: 'Chemistry',          code: 'CHM', level: 'Senior', type: 'Core' },
+      { name: 'Physics',            code: 'PHY', level: 'Senior', type: 'Core' },
+      { name: 'Economics',          code: 'ECO', level: 'Senior', type: 'Core' },
+      { name: 'Accounting',         code: 'ACC', level: 'Senior', type: 'Elective' },
+      { name: 'Government',         code: 'GOV', level: 'Senior', type: 'Elective' },
+      { name: 'Literature',         code: 'LIT', level: 'Senior', type: 'Elective' },
+      { name: 'Geography',          code: 'GEO', level: 'Senior', type: 'Elective' },
+      { name: 'CRS / MRS',          code: 'CRS', level: 'All',    type: 'Core' },
+      { name: 'Social Studies',     code: 'SST', level: 'Junior', type: 'Core' },
+      { name: 'Basic Technology',   code: 'BTC', level: 'Junior', type: 'Core' },
+      { name: 'Agricultural Sci.',  code: 'AGR', level: 'Junior', type: 'Core' },
+      { name: 'Computer Studies',   code: 'CST', level: 'All',    type: 'Core' },
+      { name: 'French',             code: 'FRN', level: 'Junior', type: 'Elective' },
+      { name: 'Civic Education',    code: 'CVE', level: 'All',    type: 'Core' },
+      { name: 'Further Maths',      code: 'FMT', level: 'Senior', type: 'Elective' },
+    ];
+    const subjectIds = {};
+    for (const s of subjectData) {
+      await q(
+        `INSERT INTO subjects (name, code, level, type) VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE code = VALUES(code), level = VALUES(level), type = VALUES(type)`,
+        [s.name, s.code, s.level, s.type]
+      );
+      const [[row]] = await q('SELECT id FROM subjects WHERE name = ?', [s.name]);
+      subjectIds[s.name] = row.id;
+    }
+    log(`${subjectData.length} subjects seeded`);
+
+    /* ── 5. USERS (admin + teachers + parents) ──────────────── */
+    hr();
+    console.log('  Seeding users…');
+    if (fresh) await q('DELETE FROM users');
+
+    const users = [
+      { name: 'SAHARCO Admin',       email: 'admin@sacredheartcollegeaba.com', role: 'Admin',   password: 'admin1234',   assigned_class: null, assigned_arm: null },
+      { name: 'Mrs Ngozi Eze',       email: 'ngozi@shc.edu.ng',               role: 'Teacher', password: 'Teacher123!', assigned_class: 'SS 1',  assigned_arm: 'A' },
+      { name: 'Mr Chidi Okafor',     email: 'chidi@shc.edu.ng',               role: 'Teacher', password: 'Teacher123!', assigned_class: 'JSS 2', assigned_arm: 'B' },
+      { name: 'Mrs Adaora Nwosu',    email: 'adaora@shc.edu.ng',              role: 'Teacher', password: 'Teacher123!', assigned_class: 'SS 2',  assigned_arm: 'A' },
+      { name: 'Mr Emeka Ibe',        email: 'emeka.ibe@shc.edu.ng',           role: 'Teacher', password: 'Teacher123!', assigned_class: 'JSS 1', assigned_arm: 'A' },
+      { name: 'Mrs Chinelo Dike',    email: 'chinelo@shc.edu.ng',             role: 'Teacher', password: 'Teacher123!', assigned_class: 'SS 3',  assigned_arm: 'A' },
+      { name: 'Mr Uche Okonkwo',     email: 'uche.parent@gmail.com',          role: 'Parent',  password: 'Parent123!',  assigned_class: null, assigned_arm: null },
+      { name: 'Mrs Ifeanyi Nwankwo', email: 'ifeanyi.parent@gmail.com',       role: 'Parent',  password: 'Parent123!',  assigned_class: null, assigned_arm: null },
+    ];
+
+    for (const u of users) {
+      const hash = await bcrypt.hash(u.password, 10);
+      await q(
+        `INSERT INTO users (name, email, role, password_hash, assigned_class, assigned_arm, active)
+         VALUES (?, ?, ?, ?, ?, ?, 1)
+         ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), active = 1`,
+        [u.name, u.email, u.role, hash, u.assigned_class, u.assigned_arm]
+      );
+    }
+    log(`${users.length} users seeded (admin + teachers + parents)`);
+
+    /* ── 6. STAFF ────────────────────────────────────────────── */
+    hr();
+    console.log('  Seeding staff…');
+    if (fresh) await q('DELETE FROM staff');
+
+    const staffData = [
+      { id: 'TCH/001', name: 'Mrs Ngozi Eze',      email: 'ngozi@shc.edu.ng',      phone: '08011112222', gender: 'Female', qualification: 'B.Ed Mathematics',        subject: 'Mathematics',     class_name: 'SS 1',  arm: 'A', date_joined: '2018-09-01' },
+      { id: 'TCH/002', name: 'Mr Chidi Okafor',    email: 'chidi@shc.edu.ng',      phone: '08022223333', gender: 'Male',   qualification: 'B.Sc English, PGDE',       subject: 'English Language',class_name: 'JSS 2', arm: 'B', date_joined: '2019-01-15' },
+      { id: 'TCH/003', name: 'Mrs Adaora Nwosu',   email: 'adaora@shc.edu.ng',     phone: '08033334444', gender: 'Female', qualification: 'B.Sc Biology',             subject: 'Biology',         class_name: 'SS 2',  arm: 'A', date_joined: '2020-09-01' },
+      { id: 'TCH/004', name: 'Mr Emeka Ibe',        email: 'emeka.ibe@shc.edu.ng',  phone: '08044445555', gender: 'Male',   qualification: 'B.Ed Chemistry, PGDE',     subject: 'Chemistry',       class_name: 'JSS 1', arm: 'A', date_joined: '2021-09-01' },
+      { id: 'TCH/005', name: 'Mrs Chinelo Dike',   email: 'chinelo@shc.edu.ng',    phone: '08055556666', gender: 'Female', qualification: 'B.A Economics',            subject: 'Economics',       class_name: 'SS 3',  arm: 'A', date_joined: '2017-09-01' },
+      { id: 'TCH/006', name: 'Mr Obiora Nwachukwu',email: 'obiora@shc.edu.ng',     phone: '08066667777', gender: 'Male',   qualification: 'B.Sc Computer Science',    subject: 'Computer Studies',class_name: null,    arm: null,date_joined: '2022-01-10' },
+      { id: 'TCH/007', name: 'Miss Ifeoma Osei',   email: 'ifeoma@shc.edu.ng',     phone: '08077778888', gender: 'Female', qualification: 'B.A French & Linguistics', subject: 'French',          class_name: null,    arm: null,date_joined: '2023-09-01' },
+    ];
+
+    for (const s of staffData) {
+      const classId = s.class_name ? classIds[s.class_name] : null;
+      await q(
+        `INSERT INTO staff (id, name, email, phone, gender, qualification, subject, class_id, arm, date_joined, status, category)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active', 'Academic')
+         ON DUPLICATE KEY UPDATE name = VALUES(name), email = VALUES(email)`,
+        [s.id, s.name, s.email, s.phone, s.gender, s.qualification, s.subject, classId, s.arm, s.date_joined]
+      );
+    }
+    log(`${staffData.length} staff seeded`);
+
+    /* ── 7. STUDENTS (60 students) ──────────────────────────── */
+    hr();
+    console.log('  Seeding students…');
+    if (fresh) await q('DELETE FROM students');
+
+    const firstNames = {
+      Female: ['Adaeze','Chidinma','Blessing','Ngozi','Amara','Chisom','Adaora','Ifeoma','Nneka','Chinwe','Obiageli','Ujunwa','Olachi','Kelechi','Ebele'],
+      Male:   ['Chukwuemeka','Ifeanyi','Tochukwu','Obinna','Emeka','Kelechi','Chidi','Uche','Nnamdi','Chibuike','Onyekachi','Ikenna','Ugochukwu','Somto','Ebuka'],
+    };
+    const lastNames = ['Okonkwo','Eze','Nwosu','Okafor','Chukwu','Ani','Uche','Obi','Nwankwo','Obiora','Anyanwu','Ibe','Dike','Nwachukwu','Osei','Nduka','Orji','Igwe','Mbah','Agu'];
+    const streets   = ['Aba Road','Ngwa Street','Pound Road','Factory Road','Eziukwu','Cemetery Road','Okigwe Road','Warehouse Road','Jubilee Road','St Michael Road'];
+
+    const classArms = [
+      ...Array(10).fill(null).map((_,i) => ({ cls: 'JSS 1', arm: ['A','A','A','A','B','B','B','C','C','C'][i] })),
+      ...Array(10).fill(null).map((_,i) => ({ cls: 'JSS 2', arm: ['A','A','A','B','B','B','B','C','C','C'][i] })),
+      ...Array( 8).fill(null).map((_,i) => ({ cls: 'JSS 3', arm: ['A','A','A','A','B','B','B','B'][i]         })),
+      ...Array(12).fill(null).map((_,i) => ({ cls: 'SS 1',  arm: ['A','A','A','A','A','B','B','B','C','C','C','C'][i] })),
+      ...Array(12).fill(null).map((_,i) => ({ cls: 'SS 2',  arm: ['A','A','A','A','A','B','B','B','C','C','C','C'][i] })),
+      ...Array( 8).fill(null).map((_,i) => ({ cls: 'SS 3',  arm: ['A','A','A','A','B','B','B','B'][i]         })),
+    ];
+
+    const studentIds = [];
+    for (let i = 0; i < classArms.length; i++) {
+      const { cls, arm } = classArms[i];
+      const gender    = i % 2 === 0 ? 'Female' : 'Male';
+      const firstName = firstNames[gender][i % firstNames[gender].length];
+      const lastName  = lastNames[i % lastNames.length];
+      const dobYear   = cls.startsWith('JSS') ? rnd(2009, 2013) : rnd(2005, 2009);
+      const sid       = `SHC/${pad(i + 1)}`;
+      const classId   = classIds[cls];
+
+      await q(
+        `INSERT INTO students (id, name, class_id, arm, gender, dob, phone, address, attendance, active, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')
+         ON DUPLICATE KEY UPDATE name = VALUES(name), class_id = VALUES(class_id)`,
+        [
+          sid, `${firstName} ${lastName}`, classId, arm, gender,
+          `${dobYear}-${pad(rnd(1,12),2)}-${pad(rnd(1,28),2)}`,
+          `080${rnd(10000000,99999999)}`,
+          `${rnd(1,60)} ${pick(streets)}, Aba`,
+          rnd(60, 100),
+        ]
+      );
+      studentIds.push({ sid, cls, arm, classId });
+    }
+    log(`${studentIds.length} students seeded`);
+
+    /* ── 8. RESULTS ─────────────────────────────────────────── */
+    hr();
+    console.log('  Seeding results…');
+    if (fresh) await q('DELETE FROM results');
+
+    const targetGroups = [
+      { cls: 'SS 1',  arm: 'A', subjects: ['Mathematics','English Language','Biology','Chemistry','Physics','Economics','Government','Literature','CRS / MRS'] },
+      { cls: 'JSS 2', arm: 'B', subjects: ['Mathematics','English Language','Social Studies','Basic Technology','Agricultural Sci.','Computer Studies','French','Civic Education','CRS / MRS'] },
+      { cls: 'SS 2',  arm: 'A', subjects: ['Mathematics','English Language','Biology','Chemistry','Physics','Economics','Accounting','Government','Geography'] },
+    ];
+    const terms = ['First Term', 'Second Term'];
+    let resultCount = 0;
+
+    for (const { cls, arm, subjects } of targetGroups) {
+      const groupStudents = studentIds.filter(s => s.cls === cls && s.arm === arm);
+      for (const term of terms) {
+        for (const { sid } of groupStudents) {
+          for (const subjectName of subjects) {
+            const ca    = rnd(15, 40);
+            const exam  = rnd(20, 60);
+            await q(
+              `INSERT INTO results (student_id, class_id, arm, subject_name, subject_id, term, session, ca, exam)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE ca = VALUES(ca), exam = VALUES(exam)`,
+              [sid, classIds[cls], arm, subjectName, subjectIds[subjectName] ?? null, term, SESSION, ca, exam]
+            );
+            resultCount++;
+          }
+        }
+      }
+    }
+    log(`${resultCount} result records seeded`);
+
+    /* ── 9. ATTENDANCE ──────────────────────────────────────── */
+    hr();
+    console.log('  Seeding attendance…');
+    if (fresh) await q('DELETE FROM attendance');
+
+    const schoolDays = [];
+    const d = new Date();
+    while (schoolDays.length < 10) {
+      d.setDate(d.getDate() - 1);
+      if (d.getDay() !== 0 && d.getDay() !== 6)
+        schoolDays.push(new Date(d).toISOString().slice(0, 10));
+    }
+    schoolDays.reverse();
+
+    const statuses   = ['p','p','p','p','p','p','l','a','e','p'];
+    const ss1Students = studentIds.filter(s => s.cls === 'SS 1' && s.arm === 'A');
+    let   attCount   = 0;
+
+    for (const date of schoolDays) {
+      for (let i = 0; i < ss1Students.length; i++) {
+        const { sid, classId } = ss1Students[i];
+        await q(
+          `INSERT INTO attendance (student_id, class_id, arm, date, term, session, status)
+           VALUES (?, ?, 'A', ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE status = VALUES(status)`,
+          [sid, classId, date, TERM, SESSION, statuses[(i + attCount) % statuses.length]]
+        );
+        attCount++;
+      }
+    }
+
+    const jss2Students = studentIds.filter(s => s.cls === 'JSS 2' && s.arm === 'B');
+    for (const date of schoolDays.slice(0, 5)) {
+      for (let i = 0; i < jss2Students.length; i++) {
+        const { sid, classId } = jss2Students[i];
+        await q(
+          `INSERT INTO attendance (student_id, class_id, arm, date, term, session, status)
+           VALUES (?, ?, 'B', ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE status = VALUES(status)`,
+          [sid, classId, date, TERM, SESSION, statuses[i % statuses.length]]
+        );
+        attCount++;
+      }
+    }
+    log(`${attCount} attendance records seeded`);
+
+    /* ── 10. ADMISSIONS ─────────────────────────────────────── */
+    hr();
+    console.log('  Seeding admissions…');
+    if (fresh) await q('DELETE FROM admissions');
+
+    const applicants = [
+      { first_name: 'Chibuike', last_name: 'Onyema',  gender: 'Male',   dob: '2011-04-12', guardian_name: 'Mr Onyema Chibuike',  guardian_phone: '08044445555', guardian_email: 'onyema@gmail.com',       class_apply: 'JSS 1', status: 'Pending',  notes: '' },
+      { first_name: 'Adanna',   last_name: 'Obi',     gender: 'Female', dob: '2008-09-20', guardian_name: 'Mrs Obi Adanna',       guardian_phone: '08055556666', guardian_email: 'obi.adanna@gmail.com',    class_apply: 'SS 1',  status: 'Approved', notes: 'Transfer student. Good academic record.' },
+      { first_name: 'Kelechi',  last_name: 'Osuji',   gender: 'Male',   dob: '2012-02-18', guardian_name: 'Mr Osuji Kelechi',     guardian_phone: '08066667777', guardian_email: 'osuji@gmail.com',         class_apply: 'JSS 1', status: 'Approved', notes: 'Excellent entrance exam score.' },
+      { first_name: 'Olachi',   last_name: 'Mbah',    gender: 'Female', dob: '2009-07-30', guardian_name: 'Mrs Mbah Olachi',      guardian_phone: '08077778888', guardian_email: 'mbah@gmail.com',          class_apply: 'JSS 3', status: 'Pending',  notes: 'Awaiting transfer documents.' },
+      { first_name: 'Somto',    last_name: 'Igwe',    gender: 'Male',   dob: '2007-11-05', guardian_name: 'Mr Igwe Somto',        guardian_phone: '08088889999', guardian_email: 'igwe.somto@gmail.com',    class_apply: 'SS 2',  status: 'Rejected', notes: 'Failed entrance assessment.' },
+      { first_name: 'Ebele',    last_name: 'Orji',    gender: 'Female', dob: '2006-05-22', guardian_name: 'Mrs Orji Ebele',       guardian_phone: '08099990000', guardian_email: 'orji@gmail.com',          class_apply: 'SS 2',  status: 'Enrolled', notes: 'Top of her previous class.' },
+    ];
+
+    for (const a of applicants) {
+      await q(
+        `INSERT INTO admissions (first_name, last_name, gender, dob, guardian_name, guardian_phone, guardian_email, class_apply, acad_session, entry_term, status, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE status = VALUES(status)`,
+        [a.first_name, a.last_name, a.gender, a.dob, a.guardian_name, a.guardian_phone, a.guardian_email, a.class_apply, SESSION, 'First Term', a.status, a.notes]
+      );
+    }
+    log(`${applicants.length} admissions seeded`);
+
+    /* ── 11. NOTICES ────────────────────────────────────────── */
+    hr();
+    console.log('  Seeding notices…');
+    if (fresh) await q('DELETE FROM notices');
+
+    const notices = [
+      { title: 'Second Term Resumption', body: `Second term resumes on Monday 13th January ${SESSION.split('/')[1]}. All students are expected to be in school by 8:00 AM.`, audience: 'all', pinned: 1 },
+      { title: 'PTA Meeting', body: 'The next PTA meeting will hold on Saturday 25th January. All parents are encouraged to attend.', audience: 'parent', pinned: 0 },
+      { title: 'Staff Meeting', body: 'A mandatory staff meeting will hold in the staff room on Friday 17th January at 2:00 PM.', audience: 'teacher', pinned: 0 },
+      { title: 'Mid-Term Break', body: 'Mid-term break runs from 10th–14th February. School resumes 17th February.', audience: 'all', pinned: 0 },
+    ];
+
+    for (const n of notices) {
+      await q(
+        `INSERT INTO notices (title, body, audience, pinned) VALUES (?, ?, ?, ?)`,
+        [n.title, n.body, n.audience, n.pinned]
+      );
+    }
+    log(`${notices.length} notices seeded`);
+
+    /* ── SUMMARY ────────────────────────────────────────────── */
+    hr();
+    console.log('\n  📊  SEED SUMMARY');
+    hr();
+    const [[{ users: uCount }]]    = await q('SELECT COUNT(*) AS users FROM users');
+    const [[{ students: sCount }]] = await q('SELECT COUNT(*) AS students FROM students');
+    const [[{ staff: stCount }]]   = await q('SELECT COUNT(*) AS staff FROM staff');
+    const [[{ results: rCount }]]  = await q('SELECT COUNT(*) AS results FROM results');
+    const [[{ att: aCount }]]      = await q('SELECT COUNT(*) AS att FROM attendance');
+    console.log(`  Users      : ${uCount}`);
+    console.log(`  Staff      : ${stCount}`);
+    console.log(`  Students   : ${sCount}`);
+    console.log(`  Results    : ${rCount}`);
+    console.log(`  Attendance : ${aCount}`);
+    hr();
+    console.log('\n  🔑  LOGIN CREDENTIALS');
+    hr();
+    console.log('  Role      Email                                  Password');
+    console.log('  ────────  ─────────────────────────────────────  ───────────');
+    console.log('  Admin     admin@sacredheartcollegeaba.com         admin1234');
+    console.log('  Teacher   ngozi@shc.edu.ng                        Teacher123!');
+    console.log('  Teacher   chidi@shc.edu.ng                        Teacher123!');
+    console.log('  Parent    uche.parent@gmail.com                   Parent123!');
+    hr();
+    console.log('\n  ✅  Seed complete!\n');
+
   } catch (err) {
     console.error('\n  ❌  Seed failed:', err.message);
     console.error(err.stack);
     process.exit(1);
+  } finally {
+    await pool.end();
   }
 }
 
-seed();
+main();
