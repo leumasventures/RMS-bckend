@@ -17,7 +17,7 @@
  *  9. `staff`         → renamed `class_unit` → `class_id` (FK)
  */
 require('dotenv').config();
-const pool = require('./db');
+const db = require('./config/db');
 
 const tables = [
 
@@ -283,17 +283,17 @@ const tables = [
 (async () => {
   try {
     for (const sql of tables) {
-      await pool.query(sql);
+      await db.pool.query(sql);
       const match = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/);
       if (match) console.log(`  ✅ Table: ${match[1]}`);
     }
 
     /* Seed default admin user if none exists */
     const bcrypt = require('bcryptjs');
-    const [[row]] = await pool.query('SELECT COUNT(*) AS cnt FROM users');
-    if (row.cnt === 0) {
+    const [rows] = await db.pool.query('SELECT COUNT(*) AS cnt FROM users');
+    if (!rows[0] || rows[0].cnt === 0) {
       const hash = await bcrypt.hash('admin1234', 10);
-      await pool.query(
+      await db.pool.query(
         'INSERT INTO users (name, email, role, password_hash) VALUES (?, ?, ?, ?)',
         ['SAHARCO Admin', 'admin@sacredheartcollegeaba.com', 'Admin', hash]
       );
@@ -311,7 +311,7 @@ const tables = [
       ['principal_name',  'Rev. Fr. Sullivan Obinna Achilihu'],
     ];
     for (const pair of defaultSettings) {
-      await pool.query(
+      await db.pool.query(
         'INSERT INTO school_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_key=setting_key',
         [pair[0], pair[1]]
       );
