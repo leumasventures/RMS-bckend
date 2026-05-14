@@ -1,6 +1,6 @@
 'use strict';
 const router = require('express').Router();
-const pool   = require('../db');
+const { pool } = require('../config/db');
 
 function mapRow(r) {
   return {
