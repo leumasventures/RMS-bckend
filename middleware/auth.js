@@ -2,141 +2,114 @@
 
 /**
  * middleware/auth.js — Sacred Heart College Eziukwu Aba (SAHARCO)
- * ──────────────────────────────────────────────────────────────────
- * authenticate  — verifies the HttpOnly access-token cookie,
- *                 attaches req.user, calls next() or returns 401.
+ * ─────────────────────────────────────────────────────────────────
+ * Authenticates requests by reading a JWT from:
+ *   1. Authorization: Bearer <token>  header  (preferred — works cross-origin)
+ *   2. access_token HttpOnly cookie           (fallback — same-origin only)
  *
- * authorize     — role guard factory; call after authenticate.
- *                 authorize('Admin', 'Teacher') → middleware that
- *                 returns 403 if req.user.role is not in the list.
+ * The frontend stores the token in sessionStorage after login and sends it
+ * as a Bearer header on every request via api.js.  The cookie path is kept
+ * as a fallback for same-origin deployments or future SSR pages.
  */
 
 const jwt = require('jsonwebtoken');
 const db  = require('../config/db');
 
-// FIX: authController.js signs tokens with JWT_ACCESS_SECRET.
-// The middleware must verify with the same secret.
-// Support both names so existing deployments with JWT_SECRET still work.
-const JWT_SECRET = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET;
-if (!JWT_SECRET) throw new Error('JWT_ACCESS_SECRET (or JWT_SECRET) environment variable is not set.');
+const JWT_SECRET = process.env.JWT_ACCESS_SECRET;
 
-// ── authenticate ──────────────────────────────────────────────────────────────
+if (!JWT_SECRET) throw new Error('JWT_ACCESS_SECRET environment variable is not set.');
 
 /**
- * Reads the access_token HttpOnly cookie, verifies it, and hydrates
- * req.user from the database (so the controller always has a fresh
- * user object, not a stale JWT snapshot).
- *
- * Falls back to a Bearer token in the Authorization header so that
- * API clients / Postman can authenticate during development without
- * needing to manage cookies.
+ * authenticate(req, res, next)
+ * Reads the JWT from the Authorization header (Bearer) or cookie.
+ * Attaches the full user record to req.user on success.
+ * Returns 401 on missing/invalid/expired token.
  */
-exports.authenticate = (req, res, next) => {
-  const tokenFromCookie = req.cookies?.access_token;
-  const tokenFromHeader = req.headers.authorization?.startsWith('Bearer ')
-    ? req.headers.authorization.slice(7)
-    : null;
-
-  const token = tokenFromCookie ?? tokenFromHeader;
-
-  if (!token) {
-    return res.status(401).json({ success: false, message: 'Authentication required.' });
-  }
-
-  let payload;
+exports.authenticate = async (req, res, next) => {
   try {
-    payload = jwt.verify(token, JWT_SECRET);
+    // ── 1. Extract token ────────────────────────────────────────────────────
+    let token = null;
+
+    // Authorization: Bearer <token>  (sent by api.js on every request)
+    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.slice(7).trim();
+    }
+
+    // Fallback: HttpOnly cookie (same-origin or browser-native requests)
+    if (!token && req.cookies && req.cookies.access_token) {
+      token = req.cookies.access_token;
+    }
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required. Please log in.',
+      });
+    }
+
+    // ── 2. Verify token ─────────────────────────────────────────────────────
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+    } catch (err) {
+      const message = err.name === 'TokenExpiredError'
+        ? 'Session has expired. Please log in again.'
+        : 'Invalid token. Please log in again.';
+      return res.status(401).json({ success: false, message });
+    }
+
+    // ── 3. Load user from DB ────────────────────────────────────────────────
+    // Use getUserById if available; fall back to findUserById for in-memory stores
+    const user = await (db.getUserById
+      ? db.getUserById(payload.id)
+      : Promise.resolve(db.findUserById && db.findUserById(payload.id)));
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Account not found. Please log in again.',
+      });
+    }
+
+    if (user.active === false) {
+      return res.status(403).json({
+        success: false,
+        message: 'This account has been deactivated. Please contact the administrator.',
+      });
+    }
+
+    // ── 4. Attach to request ────────────────────────────────────────────────
+    req.user = user;
+    next();
+
   } catch (err) {
-    const message = err.name === 'TokenExpiredError'
-      ? 'Session expired. Please log in again.'
-      : 'Invalid token. Please log in again.';
-    return res.status(401).json({ success: false, message });
+    console.error('[auth middleware] Unexpected error:', err);
+    return res.status(500).json({ success: false, message: 'Internal server error.' });
   }
-
-  // Hydrate from DB — catches deactivated accounts that still hold a valid token
-  const user = db.findUserById(payload.id);
-  if (!user || !user.active) {
-    return res.status(401).json({ success: false, message: 'Account not found or deactivated.' });
-  }
-
-  req.user = user;
-  next();
 };
-
-// ── authorize ─────────────────────────────────────────────────────────────────
 
 /**
- * Role-guard factory. Usage:
- *   router.use(authorize('Admin'))
- *   router.get('/report', authorize('Admin', 'Teacher'), ctrl.getReport)
+ * authorize(...roles)
+ * Role-based access control — use after authenticate.
  *
- * Must be used after authenticate (depends on req.user).
+ * Usage:
+ *   router.delete('/classes/:id', authenticate, authorize('Admin'), handler)
  *
- * @param {...string} roles  Allowed role names (case-sensitive, match db.users)
- * @returns {import('express').RequestHandler}
+ * @param {...string} roles  Allowed roles (case-insensitive)
  */
-exports.authorize = (...roles) => (req, res, next) => {
-  if (!req.user) {
-    return res.status(401).json({ success: false, message: 'Authentication required.' });
-  }  
-  if (!roles.includes(req.user.role)) {
-    return res.status(403).json({
-      success: false,
-      message: `Access denied. Required role: ${roles.join(' or ')}.`,
-    });
-  }
-
-  
-  next();
-};
-
-// Alias so routes.js gets exactly what it asks for
-exports.authMiddleware  = exports.authenticate;
-exports.requireRole     = exports.authorize;
-
-// ── childAccessGuard ──────────────────────────────────────────────────────────
-// Ensures a parent can only access their own child's data.
-// Admins and Teachers bypass this check.
-exports.childAccessGuard = (req, res, next) => {
-  const { studentId } = req.params;
-  const { role, linkedChildren } = req.user;
-
-  if (role === 'Admin' || role === 'Teacher') return next();
-
-  const allowed = Array.isArray(linkedChildren) && linkedChildren.includes(studentId);
-  if (!allowed) {
-    return res.status(403).json({
-      success: false,
-      message: 'Access denied. You are not linked to this student.',
-    });
-  }
-
-  next();
-};
-
-// ── rateLimiter ───────────────────────────────────────────────────────────────
-// Simple in-memory rate limiter — swap for express-rate-limit in production.
-const requestLog = new Map(); // ip → { count, windowStart }
-const WINDOW_MS  = 60_000;   // 1 minute
-const MAX_REQ    = 120;       // requests per window per IP
-
-exports.rateLimiter = (req, res, next) => {
-  const ip  = req.ip || req.connection.remoteAddress;
-  const now = Date.now();
-  const rec = requestLog.get(ip);
-
-  if (!rec || now - rec.windowStart > WINDOW_MS) {
-    requestLog.set(ip, { count: 1, windowStart: now });
-    return next();
-  }
-
-  rec.count++;
-  if (rec.count > MAX_REQ) {
-    return res.status(429).json({
-      success: false,
-      message: 'Too many requests. Please slow down.',
-    });
-  }
-
-  next();
+exports.authorize = function (...roles) {
+  const allowed = roles.map(r => r.toLowerCase());
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ success: false, message: 'Not authenticated.' });
+    }
+    if (!allowed.includes((req.user.role || '').toLowerCase())) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. Required role: ${roles.join(' or ')}.`,
+      });
+    }
+    next();
+  };
 };
