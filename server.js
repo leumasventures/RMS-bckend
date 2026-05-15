@@ -9,8 +9,30 @@ const path         = require('path');
 const app = express();
 
 /* ── CORS ── */
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
+// Fallback list covers local dev + the production frontend domain
+const DEFAULT_ORIGINS = [
+  'https://sacredheartcollegeaba.com',
+  'https://www.sacredheartcollegeaba.com',
+  'http://localhost:3000',
+  'http://localhost:5000',
+  'http://localhost:5002',
+  'http://127.0.0.1:5500',  // Live Server (VS Code)
+];
+
+const corsOrigins = ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS : DEFAULT_ORIGINS;
+
 app.use(cors({
-  origin: true,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (curl, Postman, server-to-server)
+    if (!origin) return callback(null, true);
+    if (corsOrigins.includes(origin)) return callback(null, true);
+    callback(new Error(`CORS: origin '${origin}' not allowed.`));
+  },
   credentials: true,
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],

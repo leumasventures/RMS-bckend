@@ -55,10 +55,19 @@ const BCRYPT_DUMMY_HASH    = bcrypt.hashSync('__dummy__', SALT_ROUNDS); // for t
 
 // ── Cookie helpers ────────────────────────────────────────────────────────────
 
+// CROSS-ORIGIN FIX:
+// The frontend (sacredheartcollegeaba.com) and backend (rms-bckend.onrender.com)
+// are on different domains. For cookies to be sent cross-origin the browser
+// requires: SameSite=None + Secure=true.
+// With SameSite=Strict or SameSite=Lax the browser silently drops the cookie
+// on cross-origin requests, causing every /auth/me call to return 401 and the
+// dashboard to think the user is not logged in → the "blinking" logout effect.
+const IS_CROSS_ORIGIN = process.env.CROSS_ORIGIN !== 'false'; // default true
+
 const BASE_COOKIE_OPTS = {
   httpOnly: true,
-  secure:   IS_PROD,
-  sameSite: IS_PROD ? 'strict' : 'lax',
+  secure:   IS_PROD || IS_CROSS_ORIGIN,   // must be true when SameSite=None
+  sameSite: IS_CROSS_ORIGIN ? 'none' : (IS_PROD ? 'strict' : 'lax'),
   path:     '/',
 };
 
