@@ -1,6 +1,6 @@
 'use strict';
 const router = require('express').Router();
-const ctrl   = require('../controllers/fixturesController.js');
+const ctrl = require('../controllers/fixtureController.js');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const adminOnly = authorize('Admin');
