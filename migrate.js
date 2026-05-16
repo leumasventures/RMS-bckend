@@ -34,6 +34,32 @@ const migrations = [
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+  `CREATE TABLE IF NOT EXISTS fee_ledger (
+    id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    student_id     VARCHAR(30)  NOT NULL,
+    payment_id     VARCHAR(30)  DEFAULT NULL,
+    entry_type     ENUM('charge','payment','waiver','adjustment','refund') NOT NULL DEFAULT 'payment',
+    description    VARCHAR(200) NOT NULL,
+    debit          DECIMAL(10,2) DEFAULT 0,
+    credit         DECIMAL(10,2) DEFAULT 0,
+    balance        DECIMAL(10,2) DEFAULT 0,
+    term           VARCHAR(30)  DEFAULT NULL,
+    session        VARCHAR(20)  DEFAULT NULL,
+    academic_year  VARCHAR(20)  DEFAULT NULL,
+    class_at_time  VARCHAR(60)  DEFAULT NULL,
+    reference      VARCHAR(100) DEFAULT NULL,
+    created_by     VARCHAR(120) DEFAULT NULL,
+    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  /* Upgrade fee_structure with new columns if missing */
+  `ALTER TABLE fee_structure ADD COLUMN IF NOT EXISTS class_name VARCHAR(60) DEFAULT NULL AFTER level`,
+  `ALTER TABLE fee_structure ADD COLUMN IF NOT EXISTS term VARCHAR(30) DEFAULT NULL AFTER class_name`,
+  `ALTER TABLE fee_structure ADD COLUMN IF NOT EXISTS session VARCHAR(20) DEFAULT NULL AFTER term`,
+  `ALTER TABLE fee_structure ADD COLUMN IF NOT EXISTS mandatory TINYINT(1) DEFAULT 1 AFTER session`,
+  `ALTER TABLE fee_structure ADD COLUMN IF NOT EXISTS description TEXT DEFAULT NULL AFTER mandatory`,
+  `ALTER TABLE fee_structure ADD COLUMN IF NOT EXISTS updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at`,
+
   /* Timetable — stored as JSON per class/arm, with one row per key */
   `CREATE TABLE IF NOT EXISTS timetables (
     id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
