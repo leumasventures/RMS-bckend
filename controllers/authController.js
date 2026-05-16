@@ -350,12 +350,20 @@ exports.signupRequest = async (req, res) => {
   try {
     const { type, data } = req.body ?? {};
     if (!type || !data) return fail(res, 400, 'type and data are required.');
-    if (!data.name || !data.email) return fail(res, 400, 'name and email are required.');
 
-    // Check for duplicate pending request
+    // Build full name — frontend sends firstname/lastname separately
+    const name = data.name ||
+      [data.firstname, data.lastname].filter(Boolean).map(s => String(s).trim()).join(' ') ||
+      data.fullname || '';
+    const email = (data.email || '').toLowerCase().trim();
+
+    if (!name) return fail(res, 400, 'name is required.');
+    if (!email) return fail(res, 400, 'email is required.');
+
+    // Reject duplicate pending request for same email
     const existing = await db.query1(
-      'SELECT id FROM signup_requests WHERE email=? AND status="pending"',
-      [data.email.toLowerCase().trim()]
+      `SELECT id FROM signup_requests WHERE email=? AND status='pending'`,
+      [email]
     );
     if (existing) return fail(res, 409, 'A pending request for this email already exists. Please wait for admin approval.');
 
@@ -364,12 +372,12 @@ exports.signupRequest = async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         type,
-        String(data.name).trim(),
-        data.email.toLowerCase().trim(),
+        name,
+        email,
         data.phone || null,
-        data.position || data.subject || data.relationship || null,
+        data.position || data.subject || data.department || data.relation || data.relationship || null,
         data.studentId || data.ward_id || null,
-        JSON.stringify(data),
+        JSON.stringify({ ...data, name }),  // ensure name is in raw_data too
       ]
     );
 
