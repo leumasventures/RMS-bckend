@@ -88,6 +88,88 @@ const migrations = [
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+  `CREATE TABLE IF NOT EXISTS levies (
+    id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    name        VARCHAR(120) NOT NULL,
+    category    VARCHAR(30)  DEFAULT 'Other',
+    amount      DECIMAL(10,2) NOT NULL DEFAULT 0,
+    target      VARCHAR(20)  DEFAULT 'All',
+    class_name  VARCHAR(60)  DEFAULT NULL,
+    arm         VARCHAR(10)  DEFAULT NULL,
+    term        VARCHAR(30)  DEFAULT NULL,
+    session     VARCHAR(20)  DEFAULT NULL,
+    due_date    DATE         DEFAULT NULL,
+    description TEXT         DEFAULT NULL,
+    mandatory   TINYINT(1)   DEFAULT 1,
+    active      TINYINT(1)   DEFAULT 1,
+    created_by  VARCHAR(120) DEFAULT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS levy_payments (
+    id           VARCHAR(30)  NOT NULL PRIMARY KEY,
+    levy_id      INT UNSIGNED NOT NULL,
+    student_id   VARCHAR(30)  NOT NULL,
+    amount_paid  DECIMAL(10,2) NOT NULL DEFAULT 0,
+    payment_date DATE         NOT NULL,
+    status       VARCHAR(20)  DEFAULT 'Paid',
+    reference    VARCHAR(100) DEFAULT NULL,
+    note         TEXT         DEFAULT NULL,
+    created_by   VARCHAR(120) DEFAULT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS student_archive (
+    id              VARCHAR(30)  NOT NULL PRIMARY KEY,
+    name            VARCHAR(120) NOT NULL,
+    last_class      VARCHAR(60),
+    last_arm        VARCHAR(10),
+    gender          VARCHAR(10),
+    dob             DATE,
+    parent          VARCHAR(120),
+    phone           VARCHAR(20),
+    address         VARCHAR(255),
+    admission_year  VARCHAR(10),
+    exit_year       VARCHAR(10),
+    exit_term       VARCHAR(30),
+    exit_session    VARCHAR(20),
+    exit_reason     VARCHAR(30)  DEFAULT 'Graduated',
+    exit_note       TEXT,
+    final_gpa       DECIMAL(4,2) DEFAULT NULL,
+    certificate_no  VARCHAR(50)  DEFAULT NULL,
+    forwarding_addr VARCHAR(255) DEFAULT NULL,
+    archived_by     VARCHAR(120) DEFAULT NULL,
+    archived_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    original_data   JSON         DEFAULT NULL
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS staff_archive (
+    id              VARCHAR(20)  NOT NULL PRIMARY KEY,
+    name            VARCHAR(120) NOT NULL,
+    gender          VARCHAR(10),
+    phone           VARCHAR(20),
+    email           VARCHAR(160),
+    date_joined     DATE,
+    date_left       DATE,
+    exit_year       VARCHAR(10),
+    category        VARCHAR(30),
+    position        VARCHAR(80),
+    department      VARCHAR(80),
+    subject         VARCHAR(80),
+    qualification   VARCHAR(60),
+    experience      VARCHAR(60),
+    exit_reason     VARCHAR(30)  DEFAULT 'Resigned',
+    exit_note       TEXT,
+    service_years   DECIMAL(4,1) DEFAULT NULL,
+    reference_given TINYINT(1)   DEFAULT 0,
+    last_class      VARCHAR(60),
+    last_arm        VARCHAR(10),
+    archived_by     VARCHAR(120) DEFAULT NULL,
+    archived_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    original_data   JSON         DEFAULT NULL
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   `ALTER TABLE attendance
    ADD COLUMN IF NOT EXISTS remarks TEXT DEFAULT NULL
    AFTER status`,

@@ -61,9 +61,11 @@ app.use('/api/fixtures',        require('./routes/fixtures'));
 app.use('/api/notices',         require('./routes/notices'));
 app.use('/api/admin',           require('./routes/admin'));
 app.use('/api/fees',            require('./routes/fees'));
+app.use('/api/levies',          require('./routes/levies'));
 app.use('/api/access-tokens',   require('./routes/accesstoken'));
 app.use('/api/users',           require('./routes/users'));
 app.use('/api/timetable',       require('./routes/timetable'));
+app.use('/api/archive',         require('./routes/archive'));
 
 /* ── 404 handler ── */
 app.use((_req, res) => res.status(404).json({ message: 'Route not found.' }));
