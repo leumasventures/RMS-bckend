@@ -170,6 +170,22 @@ const migrations = [
     original_data   JSON         DEFAULT NULL
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+
+  `CREATE TABLE IF NOT EXISTS signup_requests (
+    id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    type         ENUM('staff','parent','student') NOT NULL DEFAULT 'parent',
+    name         VARCHAR(120) NOT NULL,
+    email        VARCHAR(160) NOT NULL,
+    phone        VARCHAR(20)  DEFAULT NULL,
+    role_detail  VARCHAR(80)  DEFAULT NULL  COMMENT 'e.g. subject, class, relationship',
+    student_id   VARCHAR(30)  DEFAULT NULL  COMMENT 'For parent requests',
+    raw_data     JSON         DEFAULT NULL  COMMENT 'Full form data submitted',
+    status       ENUM('pending','approved','rejected') DEFAULT 'pending',
+    reviewed_by  VARCHAR(120) DEFAULT NULL,
+    review_note  TEXT         DEFAULT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   `ALTER TABLE attendance
    ADD COLUMN IF NOT EXISTS remarks TEXT DEFAULT NULL
    AFTER status`,

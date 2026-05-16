@@ -345,3 +345,104 @@ exports.resetPassword = async (req, res) => {
 
   return ok(res, { message: 'Password reset successfully. You can now log in.' });
 };
+/* ── POST /api/auth/signup-request — public, no auth ────────────────────── */
+exports.signupRequest = async (req, res) => {
+  try {
+    const { type, data } = req.body ?? {};
+    if (!type || !data) return fail(res, 400, 'type and data are required.');
+    if (!data.name || !data.email) return fail(res, 400, 'name and email are required.');
+
+    // Check for duplicate pending request
+    const existing = await db.query1(
+      'SELECT id FROM signup_requests WHERE email=? AND status="pending"',
+      [data.email.toLowerCase().trim()]
+    );
+    if (existing) return fail(res, 409, 'A pending request for this email already exists. Please wait for admin approval.');
+
+    const result = await db.run(
+      `INSERT INTO signup_requests (type, name, email, phone, role_detail, student_id, raw_data, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      [
+        type,
+        String(data.name).trim(),
+        data.email.toLowerCase().trim(),
+        data.phone || null,
+        data.position || data.subject || data.relationship || null,
+        data.studentId || data.ward_id || null,
+        JSON.stringify(data),
+      ]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: 'Request submitted. The school admin will review and activate your account.',
+      data: { id: result.insertId },
+    });
+  } catch (e) { return fail(res, 500, e.message); }
+};
+
+/* ── GET /api/auth/signup-requests — Admin only ─────────────────────────── */
+exports.getSignupRequests = async (req, res) => {
+  try {
+    const { status } = req.query;
+    let sql = 'SELECT * FROM signup_requests WHERE 1=1';
+    const p = [];
+    if (status) { sql += ' AND status=?'; p.push(status); }
+    sql += ' ORDER BY created_at DESC';
+    const rows = await db.query(sql, p);
+    const pending = rows.filter(r => r.status === 'pending').length;
+    return res.json({ success: true, data: rows, pending });
+  } catch (e) { return fail(res, 500, e.message); }
+};
+
+/* ── PATCH /api/auth/signup-requests/:id — Admin: approve or reject ──────── */
+exports.reviewSignupRequest = async (req, res) => {
+  try {
+    const { action, note, password } = req.body ?? {};
+    if (!['approve','reject'].includes(action)) return fail(res, 400, 'action must be approve or reject.');
+
+    const row = await db.query1('SELECT * FROM signup_requests WHERE id=?', [req.params.id]);
+    if (!row) return fail(res, 404, 'Signup request not found.');
+    if (row.status !== 'pending') return fail(res, 400, `Request is already ${row.status}.`);
+
+    if (action === 'reject') {
+      await db.run(
+        `UPDATE signup_requests SET status='rejected', reviewed_by=?, review_note=?, updated_at=NOW() WHERE id=?`,
+        [req.user?.name || null, note || null, req.params.id]
+      );
+      return res.json({ success: true, message: 'Request rejected.', data: { id: row.id, status: 'rejected' } });
+    }
+
+    // Approve → create user account
+    const roleMap = { staff: 'Teacher', parent: 'Parent', student: 'Student' };
+    const role    = roleMap[row.type] || 'Parent';
+    const rawData = row.raw_data ? (typeof row.raw_data === 'string' ? JSON.parse(row.raw_data) : row.raw_data) : {};
+
+    // Check email not already a user
+    const existingUser = await db.query1('SELECT id FROM users WHERE email=?', [row.email]);
+    if (existingUser) {
+      await db.run(`UPDATE signup_requests SET status='approved', reviewed_by=? WHERE id=?`, [req.user?.name, req.params.id]);
+      return res.json({ success: true, message: 'User already exists — request marked approved.', data: { id: row.id, status: 'approved' } });
+    }
+
+    const bcrypt  = require('bcryptjs');
+    const tempPwd = password || ('SHC@' + Math.random().toString(36).slice(-6).toUpperCase());
+    const hash    = await bcrypt.hash(tempPwd, 10);
+
+    const userResult = await db.run(
+      `INSERT INTO users (name, email, role, password_hash, active) VALUES (?, ?, ?, ?, 1)`,
+      [row.name, row.email, role, hash]
+    );
+
+    await db.run(
+      `UPDATE signup_requests SET status='approved', reviewed_by=?, review_note=?, updated_at=NOW() WHERE id=?`,
+      [req.user?.name || null, note || null, req.params.id]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: `Account created for ${row.name}. Temporary password: ${tempPwd}`,
+      data: { id: row.id, userId: userResult.insertId, status: 'approved', tempPassword: tempPwd },
+    });
+  } catch (e) { return fail(res, 500, e.message); }
+};
