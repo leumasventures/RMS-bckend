@@ -165,6 +165,7 @@ const tables = [
   date        DATE NOT NULL,
   status      ENUM('p','a','l','e') DEFAULT 'p'
                COMMENT 'p=present a=absent l=late e=excused',
+  remarks     TEXT DEFAULT NULL,
   saved_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY  uniq_att (student_id, date, session)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
@@ -178,7 +179,14 @@ const tables = [
   cognitive     TINYINT,
   affective     TINYINT,
   psychomotor   TINYINT,
-  behavior      JSON,
+  behavior_0    TINYINT DEFAULT NULL,
+  behavior_1    TINYINT DEFAULT NULL,
+  behavior_2    TINYINT DEFAULT NULL,
+  behavior_3    TINYINT DEFAULT NULL,
+  behavior_4    TINYINT DEFAULT NULL,
+  behavior_5    TINYINT DEFAULT NULL,
+  behavior_6    TINYINT DEFAULT NULL,
+  behavior_7    TINYINT DEFAULT NULL,
   updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY    uniq_domain (student_id, term, session)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,

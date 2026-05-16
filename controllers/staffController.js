@@ -3,9 +3,10 @@ const db = require('../config/db');
 const fail = (res, s, m) => res.status(s).json({ success: false, message: m });
 const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: true, ...meta, data });
 
-function generateStaffId() {
-  const existing = new Set((db.staff || []).map(s => s.id));
-  let n = (db.staff || []).length + 1, id;
+async function generateStaffId() {
+  const rows = await db.query('SELECT id FROM staff');
+  const existing = new Set(rows.map(s => s.id));
+  let n = existing.size + 1, id;
   do { id = `S${String(n).padStart(3, '0')}`; n++; } while (existing.has(id));
   return id;
 }
@@ -40,12 +41,13 @@ exports.getOne = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     const { name, category, position, email, gender, phone, date_joined,
-            status = 'Active', department, subject, qualification, experience, notes, id: rawId } = req.body ?? {};
+            status = 'Active', department, subject, qualification, experience,
+            notes, id: rawId, classUnit, arm } = req.body ?? {};
     if (!name)     return fail(res, 400, 'name is required.');
     if (!category) return fail(res, 400, 'category is required.');
     if (!position) return fail(res, 400, 'position is required.');
 
-    const id = rawId || generateStaffId();
+    const id = rawId || await generateStaffId();
     const exists = await db.query1('SELECT id FROM staff WHERE id=?', [id]);
     if (exists) return fail(res, 409, `Staff ID "${id}" already exists.`);
     if (email) {
@@ -53,17 +55,37 @@ exports.create = async (req, res) => {
       if (emailEx) return fail(res, 409, 'Email already in use.');
     }
 
+    // Resolve class_id if classUnit provided
+    let classId = null;
+    if (classUnit && classUnit !== 'N/A') {
+      const cls = await db.query1('SELECT id FROM classes WHERE name=?', [classUnit]);
+      classId = cls?.id || null;
+    }
+
     await db.run(
       `INSERT INTO staff (id, name, category, position, email, gender, phone, date_joined,
-        status, department, subject, qualification, experience, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status, department, subject, qualification, experience, notes, class_id, arm)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, name, category, position, email || null, gender || null, phone || null,
        date_joined || null, status, department || null, subject || null,
-       qualification || null, experience || null, notes || null]
+       qualification || null, experience || null, notes || null,
+       classId, (arm && arm !== 'N/A') ? arm : null]
     );
 
-    const staff = { id, name, category, position, email, gender, phone, dateJoined: date_joined,
-      status, department, subject, qualification, experience, notes, class: '', arm: '', credentials: [] };
+    const saved = await db.query1(
+      `SELECT st.*, c.name AS class_name FROM staff st LEFT JOIN classes c ON c.id=st.class_id WHERE st.id=?`,
+      [id]
+    );
+
+    const staff = {
+      id, name, category, position, email, gender, phone,
+      dateJoined: date_joined, status, department, subject,
+      qualification, experience, notes,
+      classUnit: saved?.class_name || '', class: saved?.class_name || '',
+      assignedClass: saved?.class_name || '',
+      arm: saved?.arm || '', assignedArm: saved?.arm || '',
+      credentials: []
+    };
     db.staff.push(staff);
     if (['Academic', 'Leadership'].includes(category)) db.teachers.push(staff);
 
