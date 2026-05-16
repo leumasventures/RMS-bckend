@@ -16,6 +16,18 @@ const fail = (res, status, msg, extra = {}) =>
 const ok = (res, data, meta = {}, status = 200) =>
   res.status(status).json({ success: true, ...meta, data });
 
+/**
+ * Resolve student ID from request params.
+ * Supports both:
+ *   /api/students/SHC031        → req.params.id = 'SHC031'
+ *   /api/students/SHC/031       → req.params.school = 'SHC', req.params.id = '031'
+ */
+function resolveId(req) {
+  return req.params.school
+    ? `${req.params.school}/${req.params.id}`
+    : req.params.id;
+}
+
 function generateStudentId() {
   const existing = new Set((db.students || []).map(s => s.id));
   let n = (db.students || []).length + 1, id;
@@ -55,9 +67,9 @@ exports.getAll = async (req, res) => {
       sql += ' AND s.id = ?'; params.push(wardId);
     } else {
       if (role === 'Teacher') { cls = assignedClass; arm = arm || assignedArm; }
-      if (cls)    { sql += ' AND c.name = ?';  params.push(cls); }
-      if (arm)    { sql += ' AND s.arm = ?';   params.push(arm); }
-      if (gender) { sql += ' AND s.gender = ?';params.push(gender); }
+      if (cls)    { sql += ' AND c.name = ?';   params.push(cls); }
+      if (arm)    { sql += ' AND s.arm = ?';    params.push(arm); }
+      if (gender) { sql += ' AND s.gender = ?'; params.push(gender); }
       if (search) { sql += ' AND s.name LIKE ?';params.push(`%${search}%`); }
       if (attnBelow != null) { sql += ' AND s.attendance <= ?'; params.push(Number(attnBelow)); }
       if (attnAbove != null) { sql += ' AND s.attendance >= ?'; params.push(Number(attnAbove)); }
@@ -81,36 +93,40 @@ exports.getAll = async (req, res) => {
   } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ── GET /api/students/:id ──────────────────────────────────────────────── */
+/* ── GET /api/students/:id  or  /api/students/:school/:id ──────────────── */
 exports.getOne = async (req, res) => {
   try {
+    const id = resolveId(req);
     const rows = await db.query(
       `SELECT s.*, c.name AS class_name FROM students s
-       LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = ?`, [req.params.id]);
+       LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = ?`, [id]);
     if (!rows.length) return fail(res, 404, 'Student not found.');
     const s = rows[0];
     if (req.user.role === 'Teacher' && !teacherCanAccess(req, res, { class: s.class_name, arm: s.arm })) return;
-    return ok(res, { id: s.id, name: s.name, class: s.class_name, arm: s.arm,
+    return ok(res, {
+      id: s.id, name: s.name, class: s.class_name, arm: s.arm,
       gender: s.gender, dob: s.dob, parent: s.parent, phone: s.phone,
-      attendance: parseFloat(s.attendance), active: !!s.active, status: s.status });
+      attendance: parseFloat(s.attendance), active: !!s.active, status: s.status,
+    });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ── GET /api/students/:id/summary ─────────────────────────────────────── */
+/* ── GET /api/students/:id/summary  or  /:school/:id/summary ───────────── */
 exports.getSummary = async (req, res) => {
   try {
+    const id = resolveId(req);
     const { term, session } = req.query;
     const s = await db.query(
       `SELECT s.*, c.name AS class_name FROM students s
-       LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = ?`, [req.params.id]);
+       LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = ?`, [id]);
     if (!s.length) return fail(res, 404, 'Student not found.');
     const student = s[0];
 
     const [results, attRows] = await Promise.all([
       db.query('SELECT * FROM results WHERE student_id=? AND term=? AND session=?',
-               [req.params.id, term, session]),
+               [id, term, session]),
       db.query('SELECT status, COUNT(*) AS cnt FROM attendance WHERE student_id=? AND term=? AND session=? GROUP BY status',
-               [req.params.id, term, session]),
+               [id, term, session]),
     ]);
 
     const total = results.reduce((a, r) => a + r.total, 0);
@@ -155,8 +171,11 @@ exports.create = async (req, res) => {
       [id, String(name).trim(), clsObj.id, arm, gender, dob || null, parent || '', phone || '', attn]
     );
 
-    const student = { id, name: String(name).trim(), class: cls, arm, gender,
-      dob: dob || '', parent: parent || '', phone: phone || '', attendance: attn, active: true, status: 'active' };
+    const student = {
+      id, name: String(name).trim(), class: cls, arm, gender,
+      dob: dob || '', parent: parent || '', phone: phone || '',
+      attendance: attn, active: true, status: 'active',
+    };
     db.students.push(student);
 
     return ok(res, student, {}, 201);
@@ -190,8 +209,11 @@ exports.bulkCreate = async (req, res) => {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 100, 1, 'active')`,
           [id, name, clsObj.id, arm, gender, row.dob || null, row.parent || '', row.phone || '']
         );
-        const s = { id, name, class: cls, arm, gender, dob: row.dob || '',
-                    parent: row.parent || '', phone: row.phone || '', attendance: 100, active: true, status: 'active' };
+        const s = {
+          id, name, class: cls, arm, gender,
+          dob: row.dob || '', parent: row.parent || '', phone: row.phone || '',
+          attendance: 100, active: true, status: 'active',
+        };
         db.students.push(s);
         created.push(s);
       } catch (e) {
@@ -203,16 +225,17 @@ exports.bulkCreate = async (req, res) => {
   } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ── PUT /api/students/:id ──────────────────────────────────────────────── */
+/* ── PUT /api/students/:id  or  /:school/:id ────────────────────────────── */
 exports.update = async (req, res) => {
   try {
-    const { id } = req.params;
-    const row = await db.query1(`SELECT s.*, c.name AS class_name FROM students s
-      LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = ?`, [id]);
+    const id = resolveId(req);
+    const row = await db.query1(
+      `SELECT s.*, c.name AS class_name FROM students s
+       LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = ?`, [id]);
     if (!row) return fail(res, 404, 'Student not found.');
 
     const { name, class: cls, arm, gender, dob, parent, phone, attendance } = req.body ?? {};
-    let classId = row.class_id;
+    let classId   = row.class_id;
     let className = row.class_name;
 
     if (cls && cls !== row.class_name) {
@@ -239,18 +262,23 @@ exports.update = async (req, res) => {
     );
 
     const cached = db.findStudent(id);
-    if (cached) Object.assign(cached, { name: newName, class: className, arm: newArm,
-      gender: newGender, dob: newDob || '', parent: newParent, phone: newPhone, attendance: newAttn });
+    if (cached) Object.assign(cached, {
+      name: newName, class: className, arm: newArm,
+      gender: newGender, dob: newDob || '', parent: newParent,
+      phone: newPhone, attendance: newAttn,
+    });
 
-    return ok(res, { id, name: newName, class: className, arm: newArm, gender: newGender,
-      dob: newDob, parent: newParent, phone: newPhone, attendance: newAttn });
+    return ok(res, {
+      id, name: newName, class: className, arm: newArm, gender: newGender,
+      dob: newDob, parent: newParent, phone: newPhone, attendance: newAttn,
+    });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ── PATCH /api/students/:id/transfer ──────────────────────────────────── */
+/* ── PATCH /api/students/:id/transfer  or  /:school/:id/transfer ────────── */
 exports.transfer = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = resolveId(req);
     const { class: newCls, arm: newArm } = req.body ?? {};
     if (!newCls || !newArm) return fail(res, 400, 'class and arm are required.');
 
@@ -269,10 +297,10 @@ exports.transfer = async (req, res) => {
   } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ── PATCH /api/students/:id/attendance ─────────────────────────────────── */
+/* ── PATCH /api/students/:id/attendance  or  /:school/:id/attendance ────── */
 exports.updateAttendance = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = resolveId(req);
     let attn;
     try { attn = parseAttendance(req.body?.attendance); } catch (e) { return fail(res, 400, e.message); }
 
@@ -287,10 +315,10 @@ exports.updateAttendance = async (req, res) => {
   } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ── PATCH /api/students/:id/status ────────────────────────────────────── */
+/* ── PATCH /api/students/:id/status  or  /:school/:id/status ───────────── */
 exports.setStatus = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = resolveId(req);
     const { status } = req.body ?? {};
     if (!VALID_STATUSES.includes(status)) return fail(res, 400, `Invalid status "${status}".`);
 
@@ -306,10 +334,10 @@ exports.setStatus = async (req, res) => {
   } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ── DELETE /api/students/:id ───────────────────────────────────────────── */
+/* ── DELETE /api/students/:id  or  /:school/:id ────────────────────────── */
 exports.remove = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = resolveId(req);
     const row = await db.query1('SELECT id, name FROM students WHERE id = ?', [id]);
     if (!row) return fail(res, 404, 'Student not found.');
 
@@ -344,25 +372,27 @@ exports.exportStudents = async (req, res) => {
   } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ── GET /api/students/:id/results ─────────────────────────────────────── */
+/* ── GET /api/students/:id/results  or  /:school/:id/results ───────────── */
 exports.getResults = async (req, res) => {
   try {
+    const id = resolveId(req);
     const { term, session } = req.query;
     const rows = await db.query(
       `SELECT * FROM results WHERE student_id=?${term ? ' AND term=?' : ''}${session ? ' AND session=?' : ''} ORDER BY subject_name`,
-      [req.params.id, ...(term ? [term] : []), ...(session ? [session] : [])]
+      [id, ...(term ? [term] : []), ...(session ? [session] : [])]
     );
     return ok(res, rows, { count: rows.length });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ── GET /api/students/:id/attendance ───────────────────────────────────── */
+/* ── GET /api/students/:id/attendance  or  /:school/:id/attendance ──────── */
 exports.getAttendance = async (req, res) => {
   try {
+    const id = resolveId(req);
     const { term, session } = req.query;
     const rows = await db.query(
       `SELECT * FROM attendance WHERE student_id=?${term ? ' AND term=?' : ''}${session ? ' AND session=?' : ''} ORDER BY date`,
-      [req.params.id, ...(term ? [term] : []), ...(session ? [session] : [])]
+      [id, ...(term ? [term] : []), ...(session ? [session] : [])]
     );
     const counts = { p: 0, l: 0, a: 0, e: 0 };
     rows.forEach(r => { if (counts[r.status] !== undefined) counts[r.status]++; });
@@ -370,10 +400,10 @@ exports.getAttendance = async (req, res) => {
   } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* ── GET /api/students/:id/report-card ─────────────────────────────────── */
+/* ── GET /api/students/:id/report-card  or  /:school/:id/report-card ────── */
 exports.getReportCard = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = resolveId(req);
     const { term, session } = req.query;
     const [sRows, results, remark, domain, attRows] = await Promise.all([
       db.query(`SELECT s.*, c.name AS class_name FROM students s
@@ -398,7 +428,7 @@ exports.getReportCard = async (req, res) => {
 
     return ok(res, {
       student:    { id: s.id, name: s.name, class: s.class_name, arm: s.arm, gender: s.gender, dob: s.dob },
-      results, average: avg, totalScore: total,
+      results,    average: avg, totalScore: total,
       remark:     remark || {},
       domain:     domain || {},
       attendance: { present: att.p || 0, late: att.l || 0, absent: att.a || 0, excused: att.e || 0 },
