@@ -49,17 +49,21 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));
 
 /* ── Routes ── */
-app.use('/api/auth',       require('./routes/auth'));
-app.use('/api/classes',    require('./routes/classes'));
-app.use('/api/students',   require('./routes/students'));
-app.use('/api/staff',      require('./routes/staff'));
-app.use('/api/teachers',   require('./routes/staff'));
-app.use('/api/subjects',   require('./routes/subjects'));
-app.use('/api/results',    require('./routes/results'));
-app.use('/api/attendance', require('./routes/attendance'));
-app.use('/api/fixtures',   require('./routes/fixtures'));
-app.use('/api/notices',    require('./routes/notices'));
-app.use('/api/admin',      require('./routes/admin'));
+app.use('/api/auth',            require('./routes/auth'));
+app.use('/api/classes',         require('./routes/classes'));
+app.use('/api/students',        require('./routes/students'));
+app.use('/api/staff',           require('./routes/staff'));
+app.use('/api/teachers',        require('./routes/staff'));
+app.use('/api/subjects',        require('./routes/subjects'));
+app.use('/api/results',         require('./routes/results'));
+app.use('/api/attendance',      require('./routes/attendance'));
+app.use('/api/fixtures',        require('./routes/fixtures'));
+app.use('/api/notices',         require('./routes/notices'));
+app.use('/api/admin',           require('./routes/admin'));
+app.use('/api/fees',            require('./routes/fees'));
+app.use('/api/access-tokens',   require('./routes/accesstoken'));
+app.use('/api/users',           require('./routes/users'));
+app.use('/api/timetable',       require('./routes/timetable'));
 
 /* ── 404 handler ── */
 app.use((_req, res) => res.status(404).json({ message: 'Route not found.' }));
