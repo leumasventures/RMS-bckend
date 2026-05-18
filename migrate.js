@@ -209,6 +209,8 @@ const migrations = [
    ADD COLUMN IF NOT EXISTS behavior_6 TINYINT DEFAULT NULL AFTER behavior_5`,
   `ALTER TABLE domain_assessments
    ADD COLUMN IF NOT EXISTS behavior_7 TINYINT DEFAULT NULL AFTER behavior_6`,
+  // Add Bursar to users role ENUM
+  `ALTER TABLE users MODIFY COLUMN role ENUM('Admin','Teacher','Student','Parent','Staff','Bursar') NOT NULL DEFAULT 'Teacher'`,
 ];
 
 (async () => {

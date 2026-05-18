@@ -4,7 +4,7 @@ const fc            = require('../controllers/feesController');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router    = express.Router();
-const adminOnly = authorize('Admin');
+const adminOnly = authorize('Admin', 'Bursar');
 router.use(authenticate);
 
 /* ── Fee Structure ── */
