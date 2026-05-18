@@ -104,7 +104,7 @@ const db = {
        app.listen(PORT, async () => { await db.sync(); });
   ─────────────────────────────────────────────────────────── */
   async sync() {
-    // Ensure signup_requests table exists (created by migrate.js but may be missing)
+    // Ensure critical tables exist (created by migrate.js but may be missing on first deploy)
     await q(`CREATE TABLE IF NOT EXISTS signup_requests (
       id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
       type         ENUM('staff','parent','student') NOT NULL DEFAULT 'parent',
@@ -119,6 +119,20 @@ const db = {
       review_note  TEXT         DEFAULT NULL,
       created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
+
+    await q(`CREATE TABLE IF NOT EXISTS fixtures (
+      id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      type       VARCHAR(50)  NOT NULL DEFAULT 'Football',
+      team_a     VARCHAR(100) NOT NULL,
+      team_b     VARCHAR(100) NOT NULL,
+      date       DATE         NULL,
+      time       VARCHAR(20)  NULL,
+      venue      VARCHAR(200) NULL,
+      status     VARCHAR(30)  NOT NULL DEFAULT 'Upcoming',
+      score_a    TINYINT UNSIGNED NULL,
+      score_b    TINYINT UNSIGNED NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
     const [
       classRows, armRows, studentRows, staffRows,
