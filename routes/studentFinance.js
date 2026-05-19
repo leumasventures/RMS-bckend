@@ -6,7 +6,7 @@
  * All endpoints: /api/student-finance/:action?sid=SHC%2F001
  */
 const express  = require('express');
-const sfc      = require('../controllers/studentFinanceController');
+const sfc      = require('../controllers/studentsFinanceController');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router             = express.Router();
