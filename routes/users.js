@@ -7,7 +7,7 @@ const router    = express.Router();
 const adminOnly = authorize('Admin');
 
 router.use(authenticate);
-router.use(adminOnly);
+router.use(adminOnly);   // ALL user-management endpoints are Admin-only
 
 router.get('/',                   userController.getAll);
 router.get('/:id',                userController.getOne);
