@@ -9,6 +9,43 @@ const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: tr
 const VALID_CATEGORIES = ['Sports','Graduation','Cultural','Interhouse','Excursion','Uniform','ID Card','Library','Technology','Medical','Other'];
 const VALID_TARGETS    = ['All','Junior','Senior','Class','Individual'];
 
+/* ── Auto-charge students when a levy is created ────────────────────────── */
+async function _autoChargeLevy(levy, createdBy) {
+  try {
+    let sql = `SELECT s.*, c.name AS class_name FROM students s
+               LEFT JOIN classes c ON c.id = s.class_id WHERE s.active = 1`;
+    const p = [];
+    if (levy.target === 'Class' && levy.class_name) {
+      sql += ' AND c.name = ?'; p.push(levy.class_name);
+      if (levy.arm) { sql += ' AND s.arm = ?'; p.push(levy.arm); }
+    } else if (levy.target === 'Junior') {
+      sql += " AND c.level = 'Junior'";
+    } else if (levy.target === 'Senior') {
+      sql += " AND c.level = 'Senior'";
+    }
+    const students = await db.query(sql, p);
+    let charged = 0;
+    for (const student of students) {
+      const exists = await db.query1(
+        'SELECT id FROM levy_payments WHERE levy_id = ? AND student_id = ?',
+        [levy.id, student.id]
+      );
+      if (exists) continue;
+      const pmtId = `LVY${levy.id}_${student.id}_${Date.now()}`.slice(0, 30);
+      await db.run(
+        `INSERT INTO levy_payments (id, levy_id, student_id, amount_paid, payment_date, status, created_by)
+         VALUES (?, ?, ?, ?, CURDATE(), 'Unpaid', ?)`,
+        [pmtId, levy.id, student.id, levy.amount, createdBy || null]
+      );
+      charged++;
+    }
+    return charged;
+  } catch(e) {
+    console.error('[autoChargeLevy]', e.message);
+    return 0;
+  }
+}
+
 /* ── GET /api/levies ─────────────────────────────────────────────────────── */
 exports.getAll = async (req, res) => {
   try {
@@ -53,7 +90,11 @@ exports.create = async (req, res) => {
        mandatory ? 1 : 0, req.user?.name || null]
     );
     const saved = await db.query1('SELECT * FROM levies WHERE id=?', [result.insertId]);
-    return ok(res, saved, {}, 201);
+
+    // Auto-charge all applicable students immediately
+    const charged = await _autoChargeLevy(saved, req.user?.name || null);
+
+    return ok(res, { ...saved, autoCharged: charged }, { charged }, 201);
   } catch (e) { return fail(res, 500, e.message); }
 };
 

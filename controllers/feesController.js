@@ -41,7 +41,19 @@ exports.addStructureItem = async (req, res) => {
       [label, parseFloat(amount), level, class_name || null, term || null, session || null, mandatory ? 1 : 0, description || null]
     );
     const item = await db.query1('SELECT * FROM fee_structure WHERE id=?', [result.insertId]);
-    return ok(res, item, {}, 201);
+
+    // Auto-charge all applicable students immediately
+    const charged = await _autoChargeStudents({
+      feeType:   label,
+      amount:    parseFloat(amount),
+      level:     class_name ? 'Class' : level,
+      className: class_name || null,
+      term:      term    || null,
+      session:   session || null,
+      createdBy: req.user?.name || null,
+    });
+
+    return ok(res, { ...item, autoCharged: charged }, { charged }, 201);
   } catch (e) { return fail(res, 500, e.message); }
 };
 
@@ -511,6 +523,62 @@ exports.exportLedgerCSV = async (req, res) => {
 /* ══════════════════════════════════════════════════════════════════════════
    INTERNAL HELPER — add ledger entry with running balance
 ══════════════════════════════════════════════════════════════════════════ */
+/* ── Auto-charge students when a fee template is created ────────────────── */
+async function _autoChargeStudents({ feeType, amount, level, className, term, session, createdBy }) {
+  try {
+    // Build student query based on who this fee targets
+    let sql = `SELECT s.*, c.name AS class_name, c.level AS class_level
+               FROM students s LEFT JOIN classes c ON c.id = s.class_id
+               WHERE s.active = 1`;
+    const p = [];
+
+    if (className) {
+      sql += ' AND c.name = ?';
+      p.push(className);
+    } else if (level && level !== 'All') {
+      sql += ' AND c.level = ?';
+      p.push(level);
+    }
+
+    const students = await db.query(sql, p);
+    let charged = 0;
+
+    for (const student of students) {
+      // Skip if already charged this fee this term+session
+      const exists = await db.query1(
+        `SELECT id FROM fee_payments WHERE student_id=? AND fee_type=? AND term=? AND (session=? OR (session IS NULL AND ? IS NULL))`,
+        [student.id, feeType, term || '', session || null, session || null]
+      );
+      if (exists) continue;
+
+      const id = `FEE${Date.now()}${Math.floor(Math.random() * 9999)}`;
+      await db.run(
+        `INSERT INTO fee_payments (id, student_id, fee_type, amount, payment_date, term, session, status, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'Unpaid', ?)`,
+        [id, student.id, feeType, amount,
+         new Date().toISOString().slice(0, 10),
+         term || null, session || null, createdBy || null]
+      );
+      await _addLedgerEntry({
+        studentId:   student.id,
+        paymentId:   id,
+        entryType:   'charge',
+        description: `${feeType}${term ? ' — ' + term : ''}${session ? ' / ' + session : ''}`,
+        debit:       amount,
+        credit:      0,
+        term, session,
+        classAtTime: student.class_name,
+        createdBy,
+      });
+      charged++;
+    }
+    return charged;
+  } catch(e) {
+    console.error('[autoCharge]', e.message);
+    return 0;
+  }
+}
+
 async function _addLedgerEntry({ studentId, paymentId, entryType, description,
   debit, credit, term, session, classAtTime, reference, createdBy }) {
   // Get last balance for this student
