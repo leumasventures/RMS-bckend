@@ -28,11 +28,25 @@ function resolveId(req) {
     : req.params.id;
 }
 
-function generateStudentId() {
-  const existing = new Set((db.students || []).map(s => s.id));
-  let n = (db.students || []).length + 1, id;
-  do { id = `SHC/${String(n).padStart(3, '0')}`; n++; } while (existing.has(id));
-  return id;
+async function generateStudentId() {
+  // Query DB directly — don't trust in-memory cache which may be stale
+  const row = await db.query1(
+    `SELECT id FROM students WHERE id LIKE 'SHC/%' ORDER BY CAST(SUBSTRING(id,5) AS UNSIGNED) DESC LIMIT 1`
+  );
+  let next = 1;
+  if (row && row.id) {
+    const num = parseInt(row.id.replace('SHC/', ''), 10);
+    if (!isNaN(num)) next = num + 1;
+  }
+  // Keep incrementing until we find a free slot
+  let id;
+  for (let attempts = 0; attempts < 500; attempts++) {
+    id = `SHC/${String(next + attempts).padStart(3, '0')}`;
+    const exists = await db.query1('SELECT id FROM students WHERE id = ?', [id]);
+    if (!exists) return id;
+  }
+  // Fallback: timestamp-based
+  return `SHC/${Date.now()}`;
 }
 
 function parseAttendance(val) {
@@ -156,7 +170,7 @@ exports.create = async (req, res) => {
     if (clsObj.arms?.length && !clsObj.arms.includes(arm))
       return fail(res, 400, `Arm "${arm}" does not exist in "${cls}".`);
 
-    const id = rawId ? String(rawId).trim() : generateStudentId();
+    const id = rawId ? String(rawId).trim() : await generateStudentId();
     const existing = await db.query1('SELECT id FROM students WHERE id = ?', [id]);
     if (existing) return fail(res, 409, `Student ID "${id}" already exists.`);
 
@@ -190,40 +204,56 @@ exports.bulkCreate = async (req, res) => {
     if (!Array.isArray(rows) || !rows.length) return fail(res, 400, 'students must be a non-empty array.');
     if (rows.length > 200) return fail(res, 400, 'Max 200 students per bulk request.');
 
-    const clsObj = db.findClass(cls);
-    if (!clsObj) return fail(res, 400, `Class "${cls}" does not exist.`);
+    // Find class — try memory cache first, then DB directly
+    let clsObj = db.findClass(cls);
+    if (!clsObj) {
+      const dbCls = await db.query1('SELECT * FROM classes WHERE name = ?', [cls.trim()]);
+      if (dbCls) clsObj = { id: dbCls.id, name: dbCls.name, level: dbCls.level, arms: [] };
+    }
+    if (!clsObj) return fail(res, 400, `Class "${cls}" not found. Available classes: ${(db.classes||[]).map(c=>c.name).join(', ')}`);
 
     const created = [], skipped = [];
 
     for (let i = 0; i < rows.length; i++) {
       const row  = rows[i];
       const name = String(row.name ?? '').trim();
-      if (!name) { skipped.push({ row: i + 1, reason: 'name required' }); continue; }
-      const gender = row.gender ?? 'Male';
-      if (!VALID_GENDERS.includes(gender)) { skipped.push({ row: i + 1, reason: `invalid gender "${gender}"` }); continue; }
+      if (!name) { skipped.push({ row: i + 1, reason: 'name is required' }); continue; }
 
-      const id = generateStudentId();
+      // Normalise gender — accept m/f/male/female case-insensitively
+      let gender = String(row.gender ?? 'Male').trim();
+      if (/^m/i.test(gender)) gender = 'Male';
+      else if (/^f/i.test(gender)) gender = 'Female';
+      else gender = 'Male'; // default
+
       try {
+        const id = await generateStudentId();
         await db.run(
           `INSERT INTO students (id, name, class_id, arm, gender, dob, parent, phone, attendance, active, status)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 100, 1, 'active')`,
-          [id, name, clsObj.id, arm, gender, row.dob || null, row.parent || '', row.phone || '']
+          [id, name, clsObj.id, arm, gender,
+           row.dob || null, row.parent || '', row.phone || '']
         );
         const s = {
-          id, name, class: cls, arm, gender,
+          id, name,
+          class: clsObj.name, class_name: clsObj.name, arm, gender,
           dob: row.dob || '', parent: row.parent || '', phone: row.phone || '',
           attendance: 100, active: true, status: 'active',
         };
-        db.students.push(s);
+        if (db.students) db.students.push(s);
         created.push(s);
       } catch (e) {
-        skipped.push({ row: i + 1, reason: e.message });
+        console.error(`[bulkCreate] row ${i+1} "${name}":`, e.message);
+        skipped.push({ row: i + 1, name, reason: e.message });
       }
     }
 
     return ok(res, created, { imported: created.length, skipped: skipped.length, errors: skipped }, 201);
-  } catch (e) { return fail(res, 500, e.message); }
+  } catch (e) {
+    console.error('[bulkCreate]', e.message);
+    return fail(res, 500, e.message);
+  }
 };
+
 
 /* ── PUT /api/students/:id  or  /:school/:id ────────────────────────────── */
 exports.update = async (req, res) => {
