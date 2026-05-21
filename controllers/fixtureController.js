@@ -74,6 +74,10 @@ exports.getAll = async (req, res) => {
     const rows = await db.query(sql, params);
     return ok(res, rows.map(mapRow), { count: rows.length });
   } catch (e) {
+    // If fixtures table doesn't exist yet, return empty array instead of 500
+    if (e.message && (e.message.includes("doesn't exist") || e.code === 'ER_NO_SUCH_TABLE')) {
+      return ok(res, [], { count: 0 });
+    }
     console.error('[fixtures] getAll:', e.message);
     return fail(res, 500, e.message);
   }
