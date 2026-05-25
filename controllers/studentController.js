@@ -163,12 +163,25 @@ exports.create = async (req, res) => {
     if (!name) return fail(res, 400, 'name is required.');
     if (!cls)  return fail(res, 400, 'class is required.');
     if (!arm)  return fail(res, 400, 'arm is required.');
-    if (!VALID_GENDERS.includes(gender)) return fail(res, 400, `gender must be Male or Female.`);
 
-    const clsObj = db.findClass(cls);
-    if (!clsObj) return fail(res, 400, `Class "${cls}" does not exist.`);
-    if (clsObj.arms?.length && !clsObj.arms.includes(arm))
-      return fail(res, 400, `Arm "${arm}" does not exist in "${cls}".`);
+    // Normalise gender
+    let g = String(gender).trim();
+    if (/^m/i.test(g)) g = 'Male';
+    else if (/^f/i.test(g)) g = 'Female';
+    else g = 'Male';
+    if (!VALID_GENDERS.includes(g)) return fail(res, 400, 'gender must be Male or Female.');
+
+    // Find class — try cache first, then DB directly
+    let clsObj = db.findClass(cls);
+    if (!clsObj) {
+      const row = await db.query1('SELECT * FROM classes WHERE name = ?', [cls.trim()]);
+      if (row) clsObj = { id: row.id, name: row.name, level: row.level, arms: [] };
+    }
+    if (!clsObj) return fail(res, 400, `Class "${cls}" not found.`);
+
+    // Verify arm exists in DB (don't trust stale in-memory arms array)
+    const armRow = await db.query1('SELECT arm FROM class_arms WHERE class_id = ? AND arm = ?', [clsObj.id, arm]);
+    if (!armRow) return fail(res, 400, `Arm "${arm}" does not exist in "${cls}".`);
 
     const id = rawId ? String(rawId).trim() : await generateStudentId();
     const existing = await db.query1('SELECT id FROM students WHERE id = ?', [id]);
@@ -182,15 +195,15 @@ exports.create = async (req, res) => {
     await db.run(
       `INSERT INTO students (id, name, class_id, arm, gender, dob, parent, phone, attendance, active, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active')`,
-      [id, String(name).trim(), clsObj.id, arm, gender, dob || null, parent || '', phone || '', attn]
+      [id, String(name).trim(), clsObj.id, arm, g, dob || null, parent || '', phone || '', attn]
     );
 
     const student = {
-      id, name: String(name).trim(), class: cls, arm, gender,
+      id, name: String(name).trim(), class: clsObj.name, class_name: clsObj.name, arm, gender: g,
       dob: dob || '', parent: parent || '', phone: phone || '',
       attendance: attn, active: true, status: 'active',
     };
-    db.students.push(student);
+    if (db.students) db.students.push(student);
 
     return ok(res, student, {}, 201);
   } catch (e) { return fail(res, 500, e.message); }
