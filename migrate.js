@@ -231,3 +231,23 @@ const migrations = [
   console.log(`\n  Done: ${passed} passed, ${failed} failed\n`);
   process.exit(failed > 0 ? 1 : 0);
 })();
+
+/* ── Add assignments + tasks columns to staff table (run once) ── */
+async function migrateStaffAssignments() {
+  try {
+    await require('./config/db').query(
+      `ALTER TABLE staff 
+       ADD COLUMN IF NOT EXISTS assignments JSON DEFAULT NULL,
+       ADD COLUMN IF NOT EXISTS tasks       JSON DEFAULT NULL`
+    );
+    console.log('[migrate] staff.assignments + staff.tasks columns added.');
+  } catch (e) {
+    if (e.message.includes('Duplicate column')) {
+      console.log('[migrate] staff assignment columns already exist.');
+    } else {
+      console.error('[migrate] staff columns error:', e.message);
+    }
+  }
+}
+
+migrateStaffAssignments();

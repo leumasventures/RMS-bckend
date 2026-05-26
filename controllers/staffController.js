@@ -11,19 +11,30 @@ async function generateStaffId() {
   return id;
 }
 
+const parseStaff = (row) => ({
+  ...row,
+  assignments: row.assignments ? (typeof row.assignments === 'string' ? JSON.parse(row.assignments) : row.assignments) : [],
+  tasks:       row.tasks       ? (typeof row.tasks === 'string'       ? JSON.parse(row.tasks)       : row.tasks)       : [],
+  credentials: row.credentials ? (typeof row.credentials === 'string' ? JSON.parse(row.credentials) : row.credentials) : [],
+  classUnit:   row.class_name  || '',
+  class:       row.class_name  || '',
+  dateJoined:  row.date_joined || '',
+});
+
 exports.getAll = async (req, res) => {
   try {
     const { category, status, department, subject, search } = req.query;
     let sql = `SELECT st.*, c.name AS class_name FROM staff st LEFT JOIN classes c ON c.id=st.class_id WHERE 1=1`;
     const p = [];
-    if (category)   { sql += ' AND st.category=?';    p.push(category); }
-    if (status)     { sql += ' AND st.status=?';      p.push(status); }
-    if (department) { sql += ' AND st.department=?';  p.push(department); }
-    if (subject)    { sql += ' AND st.subject=?';     p.push(subject); }
-    if (search)     { sql += ' AND st.name LIKE ?';   p.push(`%${search}%`); }
+    if (category)   { sql += ' AND st.category=?';  p.push(category); }
+    if (status)     { sql += ' AND st.status=?';     p.push(status); }
+    if (department) { sql += ' AND st.department=?'; p.push(department); }
+    if (subject)    { sql += ' AND st.subject=?';    p.push(subject); }
+    if (search)     { sql += ' AND (st.name LIKE ? OR st.position LIKE ? OR st.subject LIKE ?)';
+                      p.push(`%${search}%`, `%${search}%`, `%${search}%`); }
     sql += ' ORDER BY st.name';
     const rows = await db.query(sql, p);
-    return ok(res, rows.map(s => ({ ...s, class: s.class_name, assignedClass: s.class_name })), { count: rows.length });
+    return ok(res, rows.map(parseStaff), { count: rows.length });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
@@ -33,16 +44,17 @@ exports.getOne = async (req, res) => {
       `SELECT st.*, c.name AS class_name FROM staff st LEFT JOIN classes c ON c.id=st.class_id WHERE st.id=?`,
       [req.params.id]);
     if (!row) return fail(res, 404, 'Staff not found.');
-    const creds = await db.query('SELECT * FROM staff_credentials WHERE staff_id=?', [req.params.id]);
-    return ok(res, { ...row, class: row.class_name, credentials: creds });
+    return ok(res, parseStaff(row));
   } catch (e) { return fail(res, 500, e.message); }
 };
+
 
 exports.create = async (req, res) => {
   try {
     const { name, category, position, email, gender, phone, date_joined,
             status = 'Active', department, subject, qualification, experience,
-            notes, id: rawId, classUnit, arm } = req.body ?? {};
+            notes, id: rawId, classUnit, arm,
+            assignments, tasks } = req.body ?? {};
     if (!name)     return fail(res, 400, 'name is required.');
     if (!category) return fail(res, 400, 'category is required.');
     if (!position) return fail(res, 400, 'position is required.');
@@ -55,21 +67,32 @@ exports.create = async (req, res) => {
       if (emailEx) return fail(res, 409, 'Email already in use.');
     }
 
-    // Resolve class_id if classUnit provided
+    // Resolve primary class_id from first assignment or legacy classUnit
     let classId = null;
-    if (classUnit && classUnit !== 'N/A') {
-      const cls = await db.query1('SELECT id FROM classes WHERE name=?', [classUnit]);
+    const primaryClass = (Array.isArray(assignments) && assignments[0]?.cls !== 'N/A')
+      ? assignments[0]?.cls : (classUnit && classUnit !== 'N/A' ? classUnit : null);
+    const primaryArm   = (Array.isArray(assignments) && assignments[0]?.arm !== 'N/A')
+      ? assignments[0]?.arm : (arm && arm !== 'N/A' ? arm : null);
+    const primarySubject = (Array.isArray(assignments) && assignments[0]?.subject !== 'N/A')
+      ? assignments[0]?.subject : (subject || null);
+
+    if (primaryClass) {
+      const cls = await db.query1('SELECT id FROM classes WHERE name=?', [primaryClass]);
       classId = cls?.id || null;
     }
 
+    const assignmentsJson = assignments ? JSON.stringify(assignments) : null;
+    const tasksJson       = tasks       ? JSON.stringify(tasks)       : null;
+
     await db.run(
       `INSERT INTO staff (id, name, category, position, email, gender, phone, date_joined,
-        status, department, subject, qualification, experience, notes, class_id, arm)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status, department, subject, qualification, experience, notes, class_id, arm,
+        assignments, tasks)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, name, category, position, email || null, gender || null, phone || null,
-       date_joined || null, status, department || null, subject || null,
+       date_joined || null, status, department || null, primarySubject || null,
        qualification || null, experience || null, notes || null,
-       classId, (arm && arm !== 'N/A') ? arm : null]
+       classId, primaryArm || null, assignmentsJson, tasksJson]
     );
 
     const saved = await db.query1(
@@ -79,11 +102,14 @@ exports.create = async (req, res) => {
 
     const staff = {
       id, name, category, position, email, gender, phone,
-      dateJoined: date_joined, status, department, subject,
+      dateJoined: date_joined, status, department,
+      subject: primarySubject,
       qualification, experience, notes,
       classUnit: saved?.class_name || '', class: saved?.class_name || '',
       assignedClass: saved?.class_name || '',
       arm: saved?.arm || '', assignedArm: saved?.arm || '',
+      assignments: assignments || [],
+      tasks:       tasks       || [],
       credentials: []
     };
     db.staff.push(staff);
@@ -105,13 +131,45 @@ exports.update = async (req, res) => {
     fields.forEach(f => {
       if (req.body[f] !== undefined) { updates.push(`${f}=?`); values.push(req.body[f]); }
     });
+
+    // Handle assignments and tasks as JSON
+    if (req.body.assignments !== undefined) {
+      updates.push('assignments=?');
+      values.push(JSON.stringify(req.body.assignments));
+      // Also update primary subject from first assignment
+      const first = Array.isArray(req.body.assignments) && req.body.assignments[0];
+      if (first && first.subject && first.subject !== 'N/A') {
+        if (!updates.includes('subject=?')) { updates.push('subject=?'); values.push(first.subject); }
+      }
+    }
+    if (req.body.tasks !== undefined) {
+      updates.push('tasks=?');
+      values.push(JSON.stringify(req.body.tasks));
+    }
+
     if (!updates.length) return fail(res, 400, 'No fields to update.');
     values.push(id);
 
     await db.run(`UPDATE staff SET ${updates.join(',')} WHERE id=?`, values);
 
+    // Update primary class from first assignment
+    if (req.body.assignments !== undefined) {
+      const first = Array.isArray(req.body.assignments) && req.body.assignments[0];
+      if (first && first.cls && first.cls !== 'N/A') {
+        const cls = await db.query1('SELECT id FROM classes WHERE name=?', [first.cls]);
+        if (cls) {
+          const arm = (first.arm && first.arm !== 'N/A') ? first.arm : null;
+          await db.run('UPDATE staff SET class_id=?, arm=? WHERE id=?', [cls.id, arm, id]);
+        }
+      }
+    }
+
     const cached = db.staff.find(s => s.id === id);
-    if (cached) Object.assign(cached, req.body);
+    if (cached) {
+      Object.assign(cached, req.body);
+      if (req.body.assignments) cached.assignments = req.body.assignments;
+      if (req.body.tasks)       cached.tasks       = req.body.tasks;
+    }
 
     return ok(res, { id, ...req.body });
   } catch (e) { return fail(res, 500, e.message); }

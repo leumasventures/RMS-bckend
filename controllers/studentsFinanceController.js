@@ -26,12 +26,12 @@ const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: tr
 
 /* ── guard: caller must be Admin, or the student themselves, or their parent ── */
 function canAccess(user, studentId) {
-  if (user.role === 'Admin' || user.role === 'Teacher' || user.role === 'Bursar') return true;
-  if (user.role === 'Student' && user.studentId === studentId) return true;
-  // Parent can view their ward's records (ward_id stored in token)
+  // Admin, Bursar, Teacher, Staff: can view any student
+  if (['Admin', 'Bursar', 'Teacher', 'Staff'].includes(user.role)) return true;
+  // Parent: can only view their own ward
   if (user.role === 'Parent') {
     const wardId = user.wardId || user.ward_id || null;
-    if (wardId === studentId) return true;
+    return wardId && String(wardId) === String(studentId);
   }
   return false;
 }
