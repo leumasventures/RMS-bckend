@@ -532,6 +532,67 @@ const db = {
     return out;
   },
 
+  /* ── Settings helpers used by other controllers ─────────────────── */
+
+  getGradingScale() {
+    try {
+      const raw = db._settings?.grading_scale;
+      if (raw) {
+        const scale = JSON.parse(raw);
+        if (Array.isArray(scale) && scale.length) return scale;
+      }
+    } catch (e) {}
+    // Default WAEC scale
+    return [
+      { min: 75, max: 100, grade: 'A1', remark: 'Excellent',  gpa: 5.0 },
+      { min: 70, max:  74, grade: 'B2', remark: 'Very Good',  gpa: 4.0 },
+      { min: 65, max:  69, grade: 'B3', remark: 'Good',       gpa: 3.5 },
+      { min: 60, max:  64, grade: 'C4', remark: 'Credit',     gpa: 3.0 },
+      { min: 55, max:  59, grade: 'C5', remark: 'Credit',     gpa: 2.5 },
+      { min: 50, max:  54, grade: 'C6', remark: 'Credit',     gpa: 2.0 },
+      { min: 45, max:  49, grade: 'D7', remark: 'Pass',       gpa: 1.5 },
+      { min: 40, max:  44, grade: 'E8', remark: 'Weak Pass',  gpa: 1.0 },
+      { min:  0, max:  39, grade: 'F9', remark: 'Fail',       gpa: 0.0 },
+    ];
+  },
+
+  gradeScore(score) {
+    const n     = parseFloat(score) || 0;
+    const scale = db.getGradingScale();
+    const match = scale.find(s => n >= s.min && n <= s.max);
+    return match
+      ? { grade: match.grade, remark: match.remark, gpa: match.gpa ?? null }
+      : { grade: 'F9', remark: 'Fail', gpa: 0 };
+  },
+
+  getScoreBreakdown() {
+    try {
+      const raw = db._settings?.score_breakdown;
+      if (raw) {
+        const bk = JSON.parse(raw);
+        if (bk && typeof bk === 'object' && Object.keys(bk).length) return bk;
+      }
+    } catch (e) {}
+    return { 'CA 1': 10, 'CA 2': 10, 'Exam': 80 };
+  },
+
+  getMaxCA() {
+    const bk = db.getScoreBreakdown();
+    return Object.entries(bk)
+      .filter(([k]) => /^ca/i.test(k))
+      .reduce((s, [, v]) => s + v, 0) || 40;
+  },
+
+  getMaxExam() {
+    const bk = db.getScoreBreakdown();
+    const entry = Object.entries(bk).find(([k]) => /exam/i.test(k));
+    return entry ? entry[1] : 60;
+  },
+
+  getPassMark() {
+    return parseInt(db._settings?.pass_mark) || 40;
+  },
+
   /* ── RE-FORM HELPERS ─────────────────────────────────────── */
 
   findReForm(id) {

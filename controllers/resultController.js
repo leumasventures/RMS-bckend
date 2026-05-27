@@ -46,8 +46,10 @@ exports.create = async (req, res) => {
       LEFT JOIN classes c ON c.id=s.class_id WHERE s.id=?`, [studentId]);
     if (!student) return fail(res, 404, 'Student not found.');
 
-    const caVal   = Math.min(40, Math.max(0, parseInt(ca)   || 0));
-    const examVal = Math.min(60, Math.max(0, parseInt(exam) || 0));
+    const maxCA   = db.getMaxCA();
+    const maxExam = db.getMaxExam();
+    const caVal   = Math.min(maxCA,   Math.max(0, parseInt(ca)   || 0));
+    const examVal = Math.min(maxExam, Math.max(0, parseInt(exam) || 0));
     const total   = caVal + examVal;
 
     const subj    = db.subjects.find(s => s.name === subject || s.code === subject);
@@ -98,8 +100,10 @@ exports.bulkCreate = async (req, res) => {
         LEFT JOIN classes c ON c.id=s.class_id WHERE s.id=?`, [studentId]);
       if (!student) { skipped++; continue; }
 
-      const caVal   = Math.min(40, Math.max(0, parseInt(r.ca)   || 0));
-      const examVal = Math.min(60, Math.max(0, parseInt(r.exam) || 0));
+      const maxCA   = db.getMaxCA();
+      const maxExam = db.getMaxExam();
+      const caVal   = Math.min(maxCA,   Math.max(0, parseInt(r.ca)   || 0));
+      const examVal = Math.min(maxExam, Math.max(0, parseInt(r.exam) || 0));
       const total   = caVal + examVal;
       const subj    = db.subjects.find(s => s.name === subjectName || s.code === subjectName);
 
@@ -124,8 +128,10 @@ exports.update = async (req, res) => {
     const row = await db.query1('SELECT * FROM results WHERE id=?', [id]);
     if (!row) return fail(res, 404, 'Result not found.');
 
-    const caVal   = req.body.ca   != null ? Math.min(40, Math.max(0, parseInt(req.body.ca)))   : row.ca;
-    const examVal = req.body.exam != null ? Math.min(60, Math.max(0, parseInt(req.body.exam))) : row.exam;
+    const maxCA   = db.getMaxCA();
+    const maxExam = db.getMaxExam();
+    const caVal   = req.body.ca   != null ? Math.min(maxCA,   Math.max(0, parseInt(req.body.ca)))   : row.ca;
+    const examVal = req.body.exam != null ? Math.min(maxExam, Math.max(0, parseInt(req.body.exam))) : row.exam;
     const total   = caVal + examVal;
 
     await db.run('UPDATE results SET ca=?, exam=?, total=? WHERE id=?', [caVal, examVal, total, id]);

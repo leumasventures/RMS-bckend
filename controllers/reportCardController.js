@@ -35,12 +35,8 @@ const db = require('../config/db');
 /* ─── grading scale ─────────────────────────────────────────────────────── */
 // 6-tier — matches gradeOf() in resultController exactly.
 function gradeOf(total) {
-  if (total >= 70) return { letter:'A', remark:'Excellent'  };
-  if (total >= 60) return { letter:'B', remark:'Very Good'  };
-  if (total >= 50) return { letter:'C', remark:'Good'       };
-  if (total >= 45) return { letter:'D', remark:'Pass'       };
-  if (total >= 40) return { letter:'E', remark:'Weak Pass'  };
-  return               { letter:'F', remark:'Fail'       };
+  const g = db.gradeScore(total);
+  return { letter: g.grade, remark: g.remark, gpa: g.gpa };
 }
 
 /* ─── helpers ────────────────────────────────────────────────────────────── */

@@ -3,15 +3,35 @@ const db = require('../config/db');
 const fail = (res, s, m) => res.status(s).json({ success: false, message: m });
 const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: true, ...meta, data });
 
-/* GET /api/admin/settings */
+/* GET /api/admin  — returns all settings as flat key-value map */
 exports.getSettings = async (req, res) => {
   try {
     const settings = await db.getSettings();
-    return ok(res, settings);
+
+    // Parse and attach structured objects so the frontend doesn't have to
+    // parse JSON strings itself — both raw flat keys AND parsed structures returned
+    let gradingScale  = null;
+    let scoreBreakdown = null;
+    let domainLabels  = null;
+
+    try { if (settings.grading_scale)  gradingScale   = JSON.parse(settings.grading_scale);  } catch(e) {}
+    try { if (settings.score_breakdown) scoreBreakdown = JSON.parse(settings.score_breakdown); } catch(e) {}
+    try { if (settings.domain_labels)  domainLabels   = JSON.parse(settings.domain_labels);   } catch(e) {}
+
+    return ok(res, {
+      ...settings,
+      // Structured parsed versions (frontend can use directly)
+      _gradingScale:   gradingScale   || db.getGradingScale(),
+      _scoreBreakdown: scoreBreakdown || db.getScoreBreakdown(),
+      _domainLabels:   domainLabels   || {},
+      _passMark:       db.getPassMark(),
+      _maxCA:          db.getMaxCA(),
+      _maxExam:        db.getMaxExam(),
+    });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
-/* POST /api/admin/settings  body: { key: value, ... } */
+/* POST /api/admin  — update settings key-value pairs */
 exports.updateSettings = async (req, res) => {
   try {
     const body = req.body;
@@ -33,7 +53,6 @@ exports.updateSettings = async (req, res) => {
       db.domainAssessments = [];
     }
 
-    // Filter out the clear flags before persisting
     const filtered = Object.fromEntries(
       Object.entries(body).filter(([k]) => !['clear_results','clear_attendance'].includes(k))
     );
