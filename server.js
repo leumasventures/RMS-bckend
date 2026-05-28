@@ -51,6 +51,7 @@ app.get('/api/health', (_req, res) => res.json({ status: 'ok', ts: Date.now() })
 /* ── Routes ── */
 app.use('/api/auth',            require('./routes/auth'));
 app.use('/api/classes',         require('./routes/classes'));
+app.use('/api/admissions',       require('./routes/admissions'));
 app.use('/api/students',        require('./routes/students'));
 app.use('/api/staff',           require('./routes/staff'));
 app.use('/api/teachers',        require('./routes/staff'));
