@@ -105,6 +105,36 @@ const db = {
   ─────────────────────────────────────────────────────────── */
   async sync() {
     // Ensure critical tables exist (created by migrate.js but may be missing on first deploy)
+
+    await q(`CREATE TABLE IF NOT EXISTS admissions (
+      id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      first_name      VARCHAR(60)  NOT NULL,
+      last_name       VARCHAR(60)  NOT NULL,
+      middle_name     VARCHAR(60),
+      gender          VARCHAR(10),
+      dob             DATE,
+      blood_group     VARCHAR(5),
+      genotype        VARCHAR(5),
+      state_origin    VARCHAR(60),
+      lga             VARCHAR(60),
+      address         TEXT,
+      class_apply     VARCHAR(60),
+      preferred_arm   VARCHAR(10),
+      acad_session    VARCHAR(20),
+      entry_term      VARCHAR(30),
+      prev_school     VARCHAR(120),
+      last_class      VARCHAR(60),
+      guardian_name   VARCHAR(120),
+      guardian_phone  VARCHAR(20),
+      guardian_email  VARCHAR(160),
+      guardian_addr   TEXT,
+      relation        VARCHAR(40),
+      status          ENUM('Draft','Pending','Approved','Enrolled','Rejected') DEFAULT 'Pending',
+      notes           TEXT,
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(e => console.warn('[db] admissions table:', e.message));
+
     await q(`CREATE TABLE IF NOT EXISTS signup_requests (
       id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
       type         ENUM('staff','parent','student') NOT NULL DEFAULT 'parent',

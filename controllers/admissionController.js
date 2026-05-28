@@ -69,6 +69,25 @@ function normaliseRow(a) {
 
 /* ── GET /api/admissions ─────────────────────────────────────────────────── */
 exports.getAll = async (req, res) => {
+  // Ensure table exists before querying
+  try {
+    await db.run(`CREATE TABLE IF NOT EXISTS admissions (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      first_name VARCHAR(60) NOT NULL, last_name VARCHAR(60) NOT NULL,
+      middle_name VARCHAR(60), gender VARCHAR(10), dob DATE,
+      blood_group VARCHAR(5), genotype VARCHAR(5),
+      state_origin VARCHAR(60), lga VARCHAR(60), address TEXT,
+      class_apply VARCHAR(60), preferred_arm VARCHAR(10),
+      acad_session VARCHAR(20), entry_term VARCHAR(30),
+      prev_school VARCHAR(120), last_class VARCHAR(60),
+      guardian_name VARCHAR(120), guardian_phone VARCHAR(20),
+      guardian_email VARCHAR(160), guardian_addr TEXT, relation VARCHAR(40),
+      status ENUM('Draft','Pending','Approved','Enrolled','Rejected') DEFAULT 'Pending',
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  } catch(e) { /* table already exists or can't create — try anyway */ }
   try {
     const { status, session, applyingForClass, search,
             page = '1', limit = '50' } = req.query;
@@ -103,6 +122,12 @@ exports.getAll = async (req, res) => {
 /* ── GET /api/admissions/stats ───────────────────────────────────────────── */
 exports.getStats = async (req, res) => {
   try {
+    // Return zeros if table doesn't exist yet
+    await db.run('SELECT 1 FROM admissions LIMIT 1').catch(async () => {
+      return res.json({ success: true, data: { total:0,pending:0,approved:0,enrolled:0,rejected:0,draft:0 }});
+    });
+  } catch(e) {}
+  try {
     const { session } = req.query;
     let sql = `SELECT COUNT(*) AS total,
       SUM(status='Pending') AS pending, SUM(status='Approved') AS approved,
@@ -133,6 +158,23 @@ exports.getOne = async (req, res) => {
 
 /* ── POST /api/admissions ────────────────────────────────────────────────── */
 exports.create = async (req, res) => {
+  // Ensure table exists on every create attempt
+  await db.run(`CREATE TABLE IF NOT EXISTS admissions (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    first_name VARCHAR(60) NOT NULL, last_name VARCHAR(60) NOT NULL,
+    middle_name VARCHAR(60), gender VARCHAR(10), dob DATE,
+    blood_group VARCHAR(5), genotype VARCHAR(5),
+    state_origin VARCHAR(60), lga VARCHAR(60), address TEXT,
+    class_apply VARCHAR(60), preferred_arm VARCHAR(10),
+    acad_session VARCHAR(20), entry_term VARCHAR(30),
+    prev_school VARCHAR(120), last_class VARCHAR(60),
+    guardian_name VARCHAR(120), guardian_phone VARCHAR(20),
+    guardian_email VARCHAR(160), guardian_addr TEXT, relation VARCHAR(40),
+    status ENUM('Draft','Pending','Approved','Enrolled','Rejected') DEFAULT 'Pending',
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
   try {
     const {
       first_name, last_name, middle_name,
@@ -187,7 +229,10 @@ exports.create = async (req, res) => {
 
     const saved = await db.query1('SELECT * FROM admissions WHERE id=?', [result.insertId]);
     return ok(res, normaliseRow(saved), {}, 201);
-  } catch (e) { return fail(res, 500, e.message); }
+  } catch (e) {
+    console.error('[admissions/create]', e.message, e.code);
+    return fail(res, 500, e.message);
+  }
 };
 
 /* ── PUT /api/admissions/:id ─────────────────────────────────────────────── */
