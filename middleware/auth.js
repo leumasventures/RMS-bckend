@@ -104,8 +104,9 @@ exports.authenticate = async (req, res, next) => {
     next();
 
   } catch (err) {
-    console.error('[auth middleware] Unexpected error:', err);
-    return res.status(500).json({ success: false, message: 'Internal server error.' });
+    console.error('[auth middleware] Unexpected error:', err.message || err);
+    setCorsOnError(req, res);
+    return res.status(503).json({ success: false, message: 'Service temporarily unavailable. Please retry.' });
   }
 };
 

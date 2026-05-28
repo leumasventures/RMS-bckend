@@ -464,13 +464,19 @@ const db = {
    * auth.js calls this to verify the token subject still exists.
    */
   async getUserById(id) {
-    return q1(
-      `SELECT u.id, u.staff_id, u.student_id, u.name, u.email,
-              u.role, u.assigned_class, u.assigned_arm, u.ward_id, u.active
-       FROM users u
-       WHERE u.id = ? AND u.active = 1 LIMIT 1`,
-      [id]
-    );
+    try {
+      return await q1(
+        `SELECT u.id, u.staff_id, u.student_id, u.name, u.email,
+                u.role, u.assigned_class, u.assigned_arm, u.ward_id, u.active
+         FROM users u
+         WHERE u.id = ? AND u.active = 1 LIMIT 1`,
+        [id]
+      );
+    } catch (e) {
+      // DB not ready yet (cold-start) — fall back to in-memory cache
+      console.warn('[db.getUserById] DB error, using cache:', e.message);
+      return db.findUserById ? db.findUserById(id) : null;
+    }
   },
 
   /* ── RESULT HELPERS ──────────────────────────────────────── */

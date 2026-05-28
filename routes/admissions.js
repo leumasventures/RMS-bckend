@@ -16,6 +16,7 @@ router.post('/', ctrl.create);
 router.use(authenticate);
 
 router.get('/stats',            adminOnly, ctrl.getStats);
+router.get('/debug',            adminOnly, ctrl.debug);
 router.get('/export',           adminOnly, ctrl.exportAdmissions);
 router.get('/',                 adminOnly, ctrl.getAll);
 router.get('/:id',              adminOnly, ctrl.getOne);
