@@ -44,6 +44,7 @@ app.use(cookieParser());
 
 /* ── Static uploads ── */
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 /* ── Health check ── */
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));

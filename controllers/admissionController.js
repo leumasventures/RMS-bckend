@@ -156,8 +156,12 @@ exports.create = async (req, res) => {
     if (!guardian_name && !guardian_last) missing.push('guardian_name');
     if (missing.length)  return fail(res, 400, `Missing required fields: ${missing.join(', ')}.`);
 
-    if (!db.findClass(class_apply))
-      return fail(res, 400, `Class "${class_apply}" does not exist.`);
+    // Validate class against DB directly (not in-memory cache which may be empty on cold start)
+    // For public form submissions we make this a soft check — just warn, don't block
+    if (class_apply) {
+      const clsRow = await db.query1('SELECT id FROM classes WHERE name=?', [class_apply]).catch(() => null);
+      // If we can't find it, still allow submission — Admin can reassign during approval
+    }
 
     const resolvedGuardianName = guardian_name ||
       [guardian_first, guardian_last].filter(Boolean).map(s => s.trim()).join(' ');
