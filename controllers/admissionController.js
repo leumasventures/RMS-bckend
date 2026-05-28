@@ -61,11 +61,22 @@ async function ensureTable() {
 /* ── Normalise DB row ────────────────────────────────────────────────────── */
 function normaliseRow(a) {
   if (!a) return null;
-  const year = (a.acad_session || '').split('/')[1] || new Date().getFullYear();
+  // Support both old column names (from code) and actual DB column names
+  const session    = a.session      || a.acad_session  || '';
+  const cls        = a.applying_for_class || a.class_apply || a.assigned_class || '';
+  const arm        = a.preferred_arm || a.assigned_arm || '';
+  const gName      = a.parent_name  || a.guardian_name  || '';
+  const gPhone     = a.parent_phone || a.guardian_phone || '';
+  const gEmail     = a.parent_email || a.guardian_email || '';
+  const gFirst     = a.guardian_first || '';
+  const gLast      = a.guardian_last  || '';
+  const year       = session.split('/')[1] || new Date().getFullYear();
+  const appNo      = a.application_no || `ADM/${year}/${String(a.id).padStart(3,'0')}`;
   return {
     id:               a.id,
-    applicationNo:    `ADM/${year}/${String(a.id).padStart(3, '0')}`,
-    applicantName:    [a.first_name, a.middle_name, a.last_name].filter(Boolean).join(' '),
+    applicationNo:    appNo,
+    application_no:   appNo,
+    applicantName:    a.applicant_name || [a.first_name, a.middle_name, a.last_name].filter(Boolean).join(' '),
     first_name:       a.first_name     || '',
     last_name:        a.last_name      || '',
     middle_name:      a.middle_name    || '',
@@ -76,25 +87,34 @@ function normaliseRow(a) {
     state_origin:     a.state_origin   || '',
     lga:              a.lga            || '',
     address:          a.address        || '',
-    applyingForClass: a.class_apply    || '',
-    class_apply:      a.class_apply    || '',
-    preferred_arm:    a.preferred_arm  || '',
-    session:          a.acad_session   || '',
-    acad_session:     a.acad_session   || '',
+    applyingForClass: cls,
+    class_apply:      cls,
+    applying_for_class: cls,
+    preferred_arm:    arm,
+    session:          session,
+    acad_session:     session,
     entry_term:       a.entry_term     || '',
     prev_school:      a.prev_school    || '',
     last_class:       a.last_class     || '',
-    parentName:       a.guardian_name  || '',
-    guardian_name:    a.guardian_name  || '',
-    parentPhone:      a.guardian_phone || '',
-    guardian_phone:   a.guardian_phone || '',
-    parentEmail:      a.guardian_email || '',
-    guardian_email:   a.guardian_email || '',
+    parentName:       gName,
+    guardian_name:    gName,
+    parent_name:      gName,
+    guardian_first:   gFirst,
+    guardian_last:    gLast,
+    parentPhone:      gPhone,
+    guardian_phone:   gPhone,
+    parent_phone:     gPhone,
+    parentEmail:      gEmail,
+    guardian_email:   gEmail,
+    parent_email:     gEmail,
     guardian_addr:    a.guardian_addr  || '',
     relation:         a.relation       || '',
     status:           a.status         || 'Pending',
-    appliedAt:        a.created_at ? String(a.created_at).slice(0, 10) : '',
+    appliedAt:        a.applied_at || (a.created_at ? String(a.created_at).slice(0,10) : ''),
     notes:            a.notes          || '',
+    adm_no:           appNo,
+    assignedClass:    a.assigned_class || cls,
+    assignedArm:      a.assigned_arm   || arm,
   };
 }
 
@@ -108,10 +128,10 @@ exports.getAll = async (req, res) => {
     let sql = 'SELECT * FROM admissions WHERE 1=1';
     const params = [];
     if (status)           { sql += ' AND status=?';       params.push(status); }
-    if (session)          { sql += ' AND acad_session=?'; params.push(session); }
-    if (applyingForClass) { sql += ' AND class_apply=?';  params.push(applyingForClass); }
+    if (session)          { sql += ' AND session=?'; params.push(session); }
+    if (applyingForClass) { sql += ' AND applying_for_class=?'; params.push(applyingForClass); }
     if (search) {
-      sql += ' AND (first_name LIKE ? OR last_name LIKE ? OR guardian_name LIKE ? OR guardian_phone LIKE ?)';
+      sql += ' AND (first_name LIKE ? OR last_name LIKE ? OR parent_name LIKE ? OR parent_phone LIKE ?)';
       const like = `%${search}%`;
       params.push(like, like, like, like);
     }
@@ -151,7 +171,7 @@ exports.getStats = async (req, res) => {
       SUM(status='Draft')    AS draft
       FROM admissions`;
     const params = [];
-    if (session) { sql += ' WHERE acad_session=?'; params.push(session); }
+    if (session) { sql += ' WHERE session=?'; params.push(session); }
     const row = await db.query1(sql, params);
     return res.json({ success: true, data: {
       total:    Number(row?.total)    || 0,
@@ -222,28 +242,32 @@ exports.create = async (req, res) => {
       `INSERT INTO admissions
          (first_name, last_name, middle_name, gender, dob,
           blood_group, genotype, state_origin, lga, address,
-          class_apply, preferred_arm, acad_session, entry_term,
-          prev_school, last_class, guardian_name, guardian_phone,
-          guardian_email, guardian_addr, relation, status, notes)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Pending',?)`,
+          applying_for_class, preferred_arm, session, entry_term,
+          prev_school, last_class,
+          parent_name, guardian_first, guardian_last,
+          parent_phone, parent_email, guardian_addr, relation,
+          status, notes, applied_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Pending',?,CURDATE())`,
       [
         String(first_name).trim(),
         String(last_name).trim(),
-        middle_name  || null,
+        middle_name    || null,
         gender,
         dobVal,
-        blood_group  || null,
-        genotype     || null,
-        state_origin || null,
-        lga          || null,
-        address      || null,
+        blood_group    || null,
+        genotype       || null,
+        state_origin   || null,
+        lga            || null,
+        address        || null,
         class_apply,
-        preferred_arm || null,
+        preferred_arm  || null,
         acad_session,
-        entry_term   || null,
-        prev_school  || null,
-        last_class   || null,
+        entry_term     || null,
+        prev_school    || null,
+        last_class     || null,
         gName,
+        guardian_first || null,
+        guardian_last  || null,
         String(guardian_phone).trim(),
         guardian_email || null,
         guardian_addr  || null,
@@ -313,8 +337,8 @@ exports.approve = async (req, res) => {
       return fail(res, 400, 'assignedClass and assignedArm are required.');
 
     await db.run(
-      `UPDATE admissions SET status='Approved', class_apply=?, preferred_arm=?, notes=? WHERE id=?`,
-      [assignedClass, assignedArm, notes ?? row.notes, req.params.id]
+      `UPDATE admissions SET status='Approved', assigned_class=?, assigned_arm=?, applying_for_class=?, preferred_arm=?, notes=? WHERE id=?`,
+      [assignedClass, assignedArm, assignedClass, assignedArm, notes ?? row.notes, req.params.id]
     );
     const updated = await db.query1('SELECT * FROM admissions WHERE id=?', [req.params.id]);
     return ok(res, normaliseRow(updated));
@@ -343,8 +367,8 @@ exports.enroll = async (req, res) => {
     if (!row) return fail(res, 404, 'Admission record not found.');
     if (row.status !== 'Approved') return fail(res, 400, 'Only Approved applications can be enrolled.');
 
-    const cls = req.body.assignedClass || row.class_apply;
-    const arm = req.body.arm           || row.preferred_arm;
+    const cls = req.body.assignedClass || row.assigned_class || row.applying_for_class || row.class_apply;
+    const arm = req.body.arm           || row.assigned_arm  || row.preferred_arm;
     if (!cls || !arm) return fail(res, 400, 'Class and arm are required.');
 
     const clsObj = db.findClass(cls);
@@ -365,8 +389,8 @@ exports.enroll = async (req, res) => {
        row.guardian_name || '', row.guardian_phone || '', row.address || '']
     );
     await db.run(
-      `UPDATE admissions SET status='Enrolled', notes=CONCAT(IFNULL(notes,''),' | Enrolled as ',?) WHERE id=?`,
-      [studentId, req.params.id]
+      `UPDATE admissions SET status='Enrolled', assigned_student_id=?, admitted_at=CURDATE(), notes=CONCAT(IFNULL(notes,''),' | Enrolled as ',?) WHERE id=?`,
+      [studentId, studentId, req.params.id]
     );
 
     const student = { id: studentId, name: fullName, class: cls, arm,
@@ -424,7 +448,7 @@ exports.bulkEnroll = async (req, res) => {
            admission.guardian_name||'', admission.guardian_phone||'', admission.address||'']
         );
         await db.run(
-          `UPDATE admissions SET status='Enrolled', notes=CONCAT(IFNULL(notes,''),' | Enrolled as ',?) WHERE id=?`,
+          `UPDATE admissions SET status='Enrolled', assigned_student_id=?, admitted_at=CURDATE(), notes=CONCAT(IFNULL(notes,''),' | Enrolled as ',?) WHERE id=?`,
           [studentId, admission.id]
         );
         const student = { id:studentId, name:fullName, class:cls, arm };
@@ -462,15 +486,15 @@ exports.exportAdmissions = async (req, res) => {
     const { status, session } = req.query;
     let sql = 'SELECT * FROM admissions WHERE 1=1';
     const params = [];
-    if (status)  { sql += ' AND status=?';       params.push(status); }
-    if (session) { sql += ' AND acad_session=?'; params.push(session); }
+    if (status)  { sql += ' AND status=?';    params.push(status); }
+    if (session) { sql += ' AND session=?';    params.push(session); }
     sql += ' ORDER BY created_at DESC';
     const rows  = await db.query(sql, params);
     const hd    = ['ID','First','Last','Gender','DOB','Class','Arm','Session','Guardian','Phone','Email','Status','Applied'];
     const lines = [hd, ...rows.map(a => [
       a.id, a.first_name, a.last_name, a.gender, a.dob,
-      a.class_apply, a.preferred_arm||'', a.acad_session,
-      a.guardian_name||'', a.guardian_phone||'', a.guardian_email||'',
+      a.applying_for_class||'', a.preferred_arm||'', a.session||'',
+      a.parent_name||'', a.parent_phone||'', a.parent_email||'',
       a.status, String(a.created_at||'').slice(0,10),
     ])].map(r => r.map(c => `"${String(c??'').replace(/"/g,'""')}"`).join(',')).join('\r\n');
     res.setHeader('Content-Type','text/csv; charset=utf-8');
@@ -501,15 +525,10 @@ exports.debug = async (req, res) => {
     // Test INSERT with exact same types the form sends
     const ins = await db.run(
       `INSERT INTO admissions
-         (first_name, last_name, middle_name, gender, dob,
-          blood_group, genotype, state_origin, lga, address,
-          class_apply, preferred_arm, acad_session, entry_term,
-          prev_school, last_class, guardian_name, guardian_phone,
-          guardian_email, guardian_addr, relation, status, notes)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Pending',?)`,
-      ['TEST','TEST',null,'Male','2010-01-15',null,null,null,null,null,
-       'JSS 1','A','2025/2026',null,null,null,'Test Guardian','08012345678',
-       null,null,null,null]
+         (first_name, last_name, gender, dob, applying_for_class,
+          session, parent_name, parent_phone, status, applied_at)
+       VALUES (?,?,?,?,?,?,?,?,'Draft',CURDATE())`,
+      ['TEST','TEST','Male','2010-01-15','JSS 1','2025/2026','Test Guardian','08012345678']
     );
     if (ins?.insertId) {
       await db.run('DELETE FROM admissions WHERE id=?', [ins.insertId]);
