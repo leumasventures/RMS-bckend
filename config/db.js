@@ -638,6 +638,10 @@ const db = {
     return parseInt(db._settings?.pass_mark) || 40;
   },
 
+  getMaxStudentSubjects() {
+    return parseInt(db._settings?.max_subjects) || 9;
+  },
+
   getPromotionSettings() {
     try {
       const raw = db._settings?.promotion_settings;

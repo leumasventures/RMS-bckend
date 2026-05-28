@@ -30,6 +30,7 @@ exports.getSettings = async (req, res) => {
       _passMark:           db.getPassMark(),
       _maxCA:              db.getMaxCA(),
       _maxExam:            db.getMaxExam(),
+      _maxSubjects:        parseInt(settings.max_subjects) || 9,
     });
   } catch (e) { return fail(res, 500, e.message); }
 };

@@ -298,7 +298,8 @@ exports.setStudentAllocation = async (req, res) => {
 
     const student = await db.query1('SELECT id FROM students WHERE id=?', [studentId]);
     if (!student) return fail(res, 404, 'Student not found.');
-    if (subjects.length > 9) return fail(res, 400, 'Maximum 9 subjects allowed for SS2/SS3.');
+    const maxSubj = db.getMaxStudentSubjects();
+    if (subjects.length > maxSubj) return fail(res, 400, `Maximum ${maxSubj} subjects allowed.`);
 
     await db.run('DELETE FROM student_subject_allocations WHERE student_id=?', [studentId]);
     for (const subjectId of subjects) {
@@ -313,7 +314,8 @@ exports.bulkSetStudentAllocations = async (req, res) => {
   try {
     const { class: cls, arm, subjects = [] } = req.body ?? {};
     if (!cls || !arm) return fail(res, 400, 'class and arm are required.');
-    if (subjects.length > 9) return fail(res, 400, 'Maximum 9 subjects allowed.');
+    const maxSubj = db.getMaxStudentSubjects();
+    if (subjects.length > maxSubj) return fail(res, 400, `Maximum ${maxSubj} subjects allowed.`);
 
     const clsRow = await db.query1('SELECT id FROM classes WHERE name=?', [cls]);
     if (!clsRow) return fail(res, 404, 'Class not found.');
