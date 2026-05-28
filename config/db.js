@@ -275,8 +275,53 @@ const db = {
     db.admissions        = [];
     db.fees              = [];
     db.reForms           = [];
-    db.domainAssessments = [];
-    db.remarks           = [];
+
+    /* Load remarks and domain assessments from DB at startup */
+    try {
+      const currentTerm    = db._settings?.current_term    || '';
+      const currentSession = db._settings?.current_session || '';
+      const [remarkRows, domainRows, resultRows] = await Promise.all([
+        q('SELECT * FROM report_card_remarks'),
+        q('SELECT * FROM domain_assessments'),
+        currentTerm && currentSession
+          ? q('SELECT r.*, s.name AS student_name, c.name AS class_name FROM results r JOIN students s ON s.id=r.student_id LEFT JOIN classes c ON c.id=r.class_id WHERE r.term=? AND r.session=?', [currentTerm, currentSession])
+          : Promise.resolve([]),
+      ]);
+      db.remarks = remarkRows.map(r => ({
+        studentId:       r.student_id,
+        term:            r.term,
+        session:         r.session,
+        teacherRemark:   r.teacher_remark   || '',
+        principalRemark: r.principal_remark || '',
+      }));
+      db.domainAssessments = domainRows.map(d => ({
+        studentId:   d.student_id,
+        term:        d.term,
+        session:     d.session,
+        cognitive:   d.cognitive   ?? null,
+        affective:   d.affective   ?? null,
+        psychomotor: d.psychomotor ?? null,
+        behavior:    (() => { try { return JSON.parse(d.behavior || '{}'); } catch(e) { return {}; } })(),
+      }));
+      db.results = resultRows.map(r => ({
+        id:        r.id,
+        studentId: r.student_id,
+        subject:   r.subject_name,
+        term:      r.term,
+        session:   r.session,
+        ca:        r.ca,
+        exam:      r.exam,
+        total:     r.total,
+        class:     r.class_name,
+        arm:       r.arm,
+      }));
+      if (resultRows.length) console.info(`[db] loaded ${resultRows.length} results for ${currentTerm} ${currentSession}`);
+    } catch(e) {
+      console.warn('[db] Could not load remarks/domains/results:', e.message);
+      db.remarks           = [];
+      db.domainAssessments = [];
+      db.results           = [];
+    }
 
     console.info(
       `[db] synced — ${db.classes.length} classes, ` +

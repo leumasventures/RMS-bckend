@@ -3,17 +3,9 @@ const db = require('../config/db');
 const fail = (res, s, m) => res.status(s).json({ success: false, message: m });
 const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: true, ...meta, data });
 
-const GRADE_SCALE = [
-  { min: 70, grade: 'A', remark: 'Distinction' },
-  { min: 60, grade: 'B', remark: 'Very Good'   },
-  { min: 50, grade: 'C', remark: 'Good'         },
-  { min: 45, grade: 'D', remark: 'Pass'         },
-  { min: 40, grade: 'E', remark: 'Weak Pass'    },
-  { min:  0, grade: 'F', remark: 'Fail'         },
-];
-
 function grade(score) {
-  return GRADE_SCALE.find(g => score >= g.min) || GRADE_SCALE[GRADE_SCALE.length - 1];
+  const g = db.gradeScore(score);
+  return { grade: g.grade, remark: g.remark };
 }
 
 exports.getAll = async (req, res) => {
@@ -32,7 +24,10 @@ exports.getAll = async (req, res) => {
     if (subject)   { sql += ' AND r.subject_name=?';p.push(subject); }
     sql += ' ORDER BY s.name, r.subject_name';
     const rows = await db.query(sql, p);
-    return ok(res, rows.map(r => ({ ...r, ...grade(r.total) })), { count: rows.length });
+    return ok(res, rows.map(r => {
+      const g = grade(r.total || 0);
+      return { ...r, studentId: r.student_id, subject: r.subject_name, gradeLabel: g.grade, remark: g.remark };
+    }), { count: rows.length });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
@@ -68,17 +63,28 @@ exports.create = async (req, res) => {
     }
 
     await db.run(
-      `INSERT INTO results (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam, total)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE ca=VALUES(ca), exam=VALUES(exam), total=VALUES(total)`,
-      [studentId, classId, student.arm, subj?.id || null, subject, term, session, caVal, examVal, total]
+      `INSERT INTO results (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE ca=VALUES(ca), exam=VALUES(exam)`,
+      [studentId, classId, student.arm, subj?.id || null, subject, term, session, caVal, examVal]
     );
 
     const saved = await db.query1(
       'SELECT * FROM results WHERE student_id=? AND subject_name=? AND term=? AND session=?',
       [studentId, subject, term, session]);
-
-    return ok(res, { ...saved, ...grade(total) }, {}, 201);
+    const g = grade(saved?.total || total);
+    return ok(res, {
+      ...saved,
+      id:        saved?.id,
+      studentId: studentId,
+      subject:   subject,
+      term, session,
+      ca:        caVal,
+      exam:      examVal,
+      total:     saved?.total ?? total,
+      gradeLabel:g.grade,
+      remark:    g.remark,
+    }, {}, 201);
   } catch (e) { return fail(res, 500, e.message); }
 };
 
@@ -109,16 +115,16 @@ exports.bulkCreate = async (req, res) => {
 
       try {
         await db.run(
-          `INSERT INTO results (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam, total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE ca=VALUES(ca), exam=VALUES(exam), total=VALUES(total)`,
-          [studentId, student.class_id, student.arm, subj?.id || null, subjectName, termVal, sessionVal, caVal, examVal, total]
+          `INSERT INTO results (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE ca=VALUES(ca), exam=VALUES(exam)`,
+          [studentId, student.class_id, student.arm, subj?.id || null, subjectName, termVal, sessionVal, caVal, examVal]
         );
         saved++;
       } catch { skipped++; }
     }
 
-    return ok(res, { saved, skipped });
+    return ok(res, { saved, skipped, total: rows.length });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
@@ -134,8 +140,10 @@ exports.update = async (req, res) => {
     const examVal = req.body.exam != null ? Math.min(maxExam, Math.max(0, parseInt(req.body.exam))) : row.exam;
     const total   = caVal + examVal;
 
-    await db.run('UPDATE results SET ca=?, exam=?, total=? WHERE id=?', [caVal, examVal, total, id]);
-    return ok(res, { ...row, ca: caVal, exam: examVal, total, ...grade(total) });
+    await db.run('UPDATE results SET ca=?, exam=? WHERE id=?', [caVal, examVal, id]);
+    const updated = await db.query1('SELECT * FROM results WHERE id=?', [id]);
+    const g = grade(updated?.total ?? caVal + examVal);
+    return ok(res, { ...updated, studentId: updated?.student_id, subject: updated?.subject_name, gradeLabel: g.grade, remark: g.remark });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
@@ -157,10 +165,8 @@ exports.getStats = async (req, res) => {
     const [overall, bySubject] = await Promise.all([
       db.query1(
         `SELECT COUNT(*) AS total, ROUND(AVG(total),1) AS average, MAX(total) AS highest, MIN(total) AS lowest,
-         SUM(total>=70) AS A, SUM(total BETWEEN 60 AND 69) AS B, SUM(total BETWEEN 50 AND 59) AS C,
-         SUM(total BETWEEN 45 AND 49) AS D, SUM(total BETWEEN 40 AND 44) AS E, SUM(total<40) AS F,
          SUM(total>=40) AS passing, SUM(total<40) AS failing,
-         ROUND(SUM(total>=40)/COUNT(*)*100,1) AS pass_rate
+         ROUND(SUM(total>=40)/NULLIF(COUNT(*),0)*100,1) AS pass_rate
          FROM results WHERE 1=1${classId?' AND class_id=?':''}${arm?' AND arm=?':''}${term?' AND term=?':''}${session?' AND session=?':''}`,
         [...(classId?[classId]:[]), ...(arm?[arm]:[]), ...(term?[term]:[]), ...(session?[session]:[])]
       ),
@@ -194,7 +200,8 @@ exports.getOne = async (req, res) => {
     const row = await db.query1(`SELECT r.*, s.name AS student_name
       FROM results r JOIN students s ON s.id=r.student_id WHERE r.id=?`, [req.params.id]);
     if (!row) return fail(res, 404, 'Result not found.');
-    return ok(res, { ...row, ...grade(row.total) });
+    const g = grade(row.total || 0);
+    return ok(res, { ...row, studentId: row.student_id, subject: row.subject_name, gradeLabel: g.grade, remark: g.remark });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
@@ -234,12 +241,32 @@ exports.setClassAllocation = async (req, res) => {
     const clsRow = await db.query1('SELECT id FROM classes WHERE name=?', [cls]);
     if (!clsRow) return fail(res, 404, 'Class not found.');
 
+    // Accept both numeric IDs and subject names
+    const resolvedIds = [];
+    for (const sub of subjects) {
+      if (typeof sub === 'number' || (typeof sub === 'string' && /^\d+$/.test(sub))) {
+        resolvedIds.push(parseInt(sub));
+      } else {
+        // Look up by name
+        const row = await db.query1('SELECT id FROM subjects WHERE name=? OR code=?', [sub, sub]);
+        if (row) resolvedIds.push(row.id);
+      }
+    }
+
     await db.run('DELETE FROM class_subject_allocations WHERE class_id=? AND arm=?', [clsRow.id, arm]);
-    for (const subjectId of subjects) {
+    for (const subjectId of resolvedIds) {
       await db.run('INSERT IGNORE INTO class_subject_allocations (class_id, arm, subject_id) VALUES (?, ?, ?)',
         [clsRow.id, arm, subjectId]);
     }
-    return ok(res, { class: cls, arm, subjects, updated: true });
+
+    // Return the saved subjects with names for confirmation
+    const saved = await db.query(
+      `SELECT s.id, s.name, s.code FROM class_subject_allocations a
+       JOIN subjects s ON s.id=a.subject_id
+       WHERE a.class_id=? AND a.arm=? ORDER BY s.name`,
+      [clsRow.id, arm]);
+
+    return ok(res, { class: cls, arm, subjects: saved.map(s=>s.name), count: saved.length, updated: true });
   } catch (e) { return fail(res, 500, e.message); }
 };
 

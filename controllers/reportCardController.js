@@ -410,16 +410,40 @@ exports.saveRemark = (req, res) => {
   if (req.user.role === 'Teacher' && !canViewClass(req.user, student.class, student.arm))
     return fail(res, 403, 'You can only add remarks for your assigned class/arm.');
 
+  const col    = type === 'teacher' ? 'teacher_remark' : 'principal_remark';
+  const strVal = String(value);
+
+  db.run(
+    `INSERT INTO report_card_remarks (student_id, term, session, ${col})
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE ${col}=VALUES(${col})`,
+    [studentId, term, session, strVal]
+  ).then(() => {
+    // Keep in-memory cache in sync
+    const remarks = ensureCollection('remarks');
+    let entry = remarks.find(r => r.studentId === studentId && r.term === term && r.session === session);
+    if (entry) {
+      entry[type === 'teacher' ? 'teacherRemark' : 'principalRemark'] = strVal;
+    } else {
+      entry = {
+        studentId, term, session,
+        teacherRemark:   type === 'teacher'   ? strVal : '',
+        principalRemark: type === 'principal' ? strVal : '',
+      };
+      remarks.push(entry);
+    }
+  }).catch(e => console.error('[saveRemark DB]', e.message));
+
+  // Also update in-memory immediately (don't wait for DB)
   const remarks = ensureCollection('remarks');
   let entry = remarks.find(r => r.studentId === studentId && r.term === term && r.session === session);
-
   if (entry) {
-    entry[type === 'teacher' ? 'teacherRemark' : 'principalRemark'] = String(value);
+    entry[type === 'teacher' ? 'teacherRemark' : 'principalRemark'] = strVal;
   } else {
     entry = {
       studentId, term, session,
-      teacherRemark:   type === 'teacher'    ? String(value) : '',
-      principalRemark: type === 'principal'  ? String(value) : '',
+      teacherRemark:   type === 'teacher'   ? strVal : '',
+      principalRemark: type === 'principal' ? strVal : '',
     };
     remarks.push(entry);
   }
@@ -519,6 +543,22 @@ exports.setDomains = (req, res) => {
 
   if (idx >= 0) domains[idx] = updated;
   else domains.push(updated);
+
+  // Persist to DB
+  const behaviorJson = JSON.stringify(updated.behavior || {});
+  const fields = [];
+  const vals   = [];
+  if (updated.cognitive   !== undefined) { fields.push('cognitive=?');   vals.push(updated.cognitive); }
+  if (updated.affective   !== undefined) { fields.push('affective=?');   vals.push(updated.affective); }
+  if (updated.psychomotor !== undefined) { fields.push('psychomotor=?'); vals.push(updated.psychomotor); }
+  fields.push('behavior=?'); vals.push(behaviorJson);
+
+  db.run(
+    `INSERT INTO domain_assessments (student_id, term, session, cognitive, affective, psychomotor, behavior)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE ${fields.join(', ')}`,
+    [studentId, term, session, updated.cognitive, updated.affective, updated.psychomotor, behaviorJson, ...vals]
+  ).catch(e => console.error('[setDomains DB]', e.message));
 
   return ok(res, {
     ...updated,
