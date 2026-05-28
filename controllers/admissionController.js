@@ -179,7 +179,7 @@ exports.getOne = async (req, res) => {
 
 /* ── POST /api/admissions ────────────────────────────────────────────────── */
 exports.create = async (req, res) => {
-  await ensureTable();
+  await ensureTable().catch(() => {}); // ignore — table was created by admin
   try {
     const {
       first_name, last_name, middle_name = null,
@@ -214,6 +214,10 @@ exports.create = async (req, res) => {
       [guardian_first, guardian_last].filter(Boolean).join(' ').trim() ||
       'Guardian';
 
+    // Sanitise date — MySQL DATE requires YYYY-MM-DD
+    const dobVal = (dob && String(dob).match(/^\d{4}-\d{2}-\d{2}$/)) ? dob : null;
+    if (!dobVal) console.warn('[admissions/create] Invalid dob value:', dob);
+
     const result = await db.run(
       `INSERT INTO admissions
          (first_name, last_name, middle_name, gender, dob,
@@ -227,7 +231,7 @@ exports.create = async (req, res) => {
         String(last_name).trim(),
         middle_name  || null,
         gender,
-        dob,
+        dobVal,
         blood_group  || null,
         genotype     || null,
         state_origin || null,
@@ -480,16 +484,41 @@ exports.exportAdmissions = async (req, res) => {
    Remove this in production if desired.
 ──────────────────────────────────────────────────────────────────────────── */
 exports.debug = async (req, res) => {
-  const result = { tableExists: false, rowCount: 0, error: null, createAttempted: false };
+  const result = {
+    dbConnected: false, tableExists: false,
+    insertTest: false, error: null, code: null,
+    dbHost: process.env.DB_HOST || 'auth-db1777.hstgr.io',
+    dbName: process.env.DB_NAME || 'u156099858_shcaba_db',
+  };
   try {
-    await db.run(CREATE_TABLE_SQL);
-    result.createAttempted = true;
-    result.tableExists     = true;
+    await db.query1('SELECT 1 AS ok');
+    result.dbConnected = true;
+
     const row = await db.query1('SELECT COUNT(*) AS n FROM admissions');
-    result.rowCount = row?.n || 0;
+    result.tableExists = true;
+    result.rowCount    = Number(row?.n) || 0;
+
+    // Test INSERT with exact same types the form sends
+    const ins = await db.run(
+      `INSERT INTO admissions
+         (first_name, last_name, middle_name, gender, dob,
+          blood_group, genotype, state_origin, lga, address,
+          class_apply, preferred_arm, acad_session, entry_term,
+          prev_school, last_class, guardian_name, guardian_phone,
+          guardian_email, guardian_addr, relation, status, notes)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Pending',?)`,
+      ['TEST','TEST',null,'Male','2010-01-15',null,null,null,null,null,
+       'JSS 1','A','2025/2026',null,null,null,'Test Guardian','08012345678',
+       null,null,null,null]
+    );
+    if (ins?.insertId) {
+      await db.run('DELETE FROM admissions WHERE id=?', [ins.insertId]);
+      result.insertTest = true;
+    }
   } catch (e) {
     result.error = e.message;
-    result.code  = e.code;
+    result.code  = e.code || null;
+    result.sqlState = e.sqlState || null;
   }
-  return res.json({ success: true, data: result });
+  return res.json({ success: !result.error, data: result });
 };
