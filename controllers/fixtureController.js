@@ -60,26 +60,19 @@ function mapRow(r) {
 exports.getAll = async (req, res) => {
   try {
     const { type, status, from, to } = req.query;
-
     let sql = 'SELECT * FROM fixtures WHERE 1=1';
     const params = [];
-
-    if (type)   { sql += ' AND type = ?';       params.push(type); }
-    if (status) { sql += ' AND status = ?';     params.push(status); }
-    if (from)   { sql += ' AND date >= ?';      params.push(from); }
-    if (to)     { sql += ' AND date <= ?';      params.push(to); }
-
+    if (type)   { sql += ' AND type=?';   params.push(type); }
+    if (status) { sql += ' AND status=?'; params.push(status); }
+    if (from)   { sql += ' AND date>=?';  params.push(from); }
+    if (to)     { sql += ' AND date<=?';  params.push(to); }
     sql += ' ORDER BY date DESC, time ASC';
-
     const rows = await db.query(sql, params);
     return ok(res, rows.map(mapRow), { count: rows.length });
   } catch (e) {
-    // If fixtures table doesn't exist yet, return empty array instead of 500
-    if (e.message && (e.message.includes("doesn't exist") || e.code === 'ER_NO_SUCH_TABLE')) {
-      return ok(res, [], { count: 0 });
-    }
-    console.error('[fixtures] getAll:', e.message);
-    return fail(res, 500, e.message);
+    // Any DB error (table missing, connection issue) → return empty list, never 500
+    console.warn('[fixtures] getAll (non-fatal):', e.message);
+    return ok(res, [], { count: 0 });
   }
 };
 
