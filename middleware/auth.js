@@ -25,6 +25,22 @@ if (!JWT_SECRET) throw new Error('JWT_ACCESS_SECRET environment variable is not 
  * Attaches the full user record to req.user on success.
  * Returns 401 on missing/invalid/expired token.
  */
+/* Set CORS headers on error responses so browser can read 401/403 */
+function setCorsOnError(req, res) {
+  const origin  = req.headers.origin;
+  const allowed = [
+    'https://sacredheartcollegeaba.com',
+    'https://www.sacredheartcollegeaba.com',
+    'http://localhost:3000', 'http://localhost:5000',
+    'http://localhost:5002', 'http://127.0.0.1:5500',
+  ];
+  if (origin && allowed.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+}
+
 exports.authenticate = async (req, res, next) => {
   try {
     // ── 1. Extract token ────────────────────────────────────────────────────
@@ -42,6 +58,7 @@ exports.authenticate = async (req, res, next) => {
     }
 
     if (!token) {
+      setCorsOnError(req, res);
       return res.status(401).json({
         success: false,
         message: 'Authentication required. Please log in.',
@@ -56,6 +73,7 @@ exports.authenticate = async (req, res, next) => {
       const message = err.name === 'TokenExpiredError'
         ? 'Session has expired. Please log in again.'
         : 'Invalid token. Please log in again.';
+      setCorsOnError(req, res);
       return res.status(401).json({ success: false, message });
     }
 
@@ -66,6 +84,7 @@ exports.authenticate = async (req, res, next) => {
       : Promise.resolve(db.findUserById && db.findUserById(payload.id)));
 
     if (!user) {
+      setCorsOnError(req, res);
       return res.status(401).json({
         success: false,
         message: 'Account not found. Please log in again.',
@@ -73,6 +92,7 @@ exports.authenticate = async (req, res, next) => {
     }
 
     if (user.active === false) {
+      setCorsOnError(req, res);
       return res.status(403).json({
         success: false,
         message: 'This account has been deactivated. Please contact the administrator.',
@@ -102,9 +122,11 @@ exports.authorize = function (...roles) {
   const allowed = roles.map(r => r.toLowerCase());
   return (req, res, next) => {
     if (!req.user) {
+      setCorsOnError(req, res);
       return res.status(401).json({ success: false, message: 'Not authenticated.' });
     }
     if (!allowed.includes((req.user.role || '').toLowerCase())) {
+      setCorsOnError(req, res);
       return res.status(403).json({
         success: false,
         message: `Access denied. Required role: ${roles.join(' or ')}.`,

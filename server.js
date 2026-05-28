@@ -73,9 +73,22 @@ app.use('/api/archive',         require('./routes/archive'));
 app.use((_req, res) => res.status(404).json({ message: 'Route not found.' }));
 
 /* ── Global error handler ── */
-app.use((err, _req, res, _next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ message: err.message || 'Internal server error.' });
+app.use((err, req, res, _next) => {
+  console.error('Unhandled error:', err.message || err);
+  // Always echo CORS headers on error so browser can read the response
+  const origin  = req.headers.origin;
+  const allowed = [
+    'https://sacredheartcollegeaba.com',
+    'https://www.sacredheartcollegeaba.com',
+    'http://localhost:3000', 'http://localhost:5000',
+    'http://localhost:5002', 'http://127.0.0.1:5500',
+  ];
+  if (origin && allowed.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+  const status = err.status || err.statusCode || 500;
+  res.status(status).json({ success: false, message: err.message || 'Internal server error.' });
 });
 
 const db   = require('./config/db');
