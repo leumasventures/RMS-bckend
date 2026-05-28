@@ -593,6 +593,31 @@ const db = {
     return parseInt(db._settings?.pass_mark) || 40;
   },
 
+  getPromotionSettings() {
+    try {
+      const raw = db._settings?.promotion_settings;
+      if (raw) {
+        const ps = JSON.parse(raw);
+        if (ps && typeof ps === 'object') return ps;
+      }
+    } catch (e) {}
+    return {
+      enableCumulative: true,
+      useAverage:       true,  minAverage:    40,
+      usePassCount:     true,  minPassCount:  5,
+      useNoFail:        false, noFailMark:    30,
+      useAttendance:    false, minAttendance: 75,
+      useCoreSubjects:  false, coreSubjects:  ['Mathematics', 'English Language'],
+      labelPromoted:    'PROMOTED',
+      labelRepeat:      'REPEAT',
+      labelIncomplete:  'INCOMPLETE',
+      showTermBreakdown:      true,
+      showCumulativePosition: true,
+      showPromotionBox:       true,
+      showNextClass:          false,
+    };
+  },
+
   /* ── RE-FORM HELPERS ─────────────────────────────────────── */
 
   findReForm(id) {

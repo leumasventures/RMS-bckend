@@ -18,15 +18,18 @@ exports.getSettings = async (req, res) => {
     try { if (settings.score_breakdown) scoreBreakdown = JSON.parse(settings.score_breakdown); } catch(e) {}
     try { if (settings.domain_labels)  domainLabels   = JSON.parse(settings.domain_labels);   } catch(e) {}
 
+    let promotionSettings = null;
+    try { if (settings.promotion_settings) promotionSettings = JSON.parse(settings.promotion_settings); } catch(e) {}
+
     return ok(res, {
       ...settings,
-      // Structured parsed versions (frontend can use directly)
-      _gradingScale:   gradingScale   || db.getGradingScale(),
-      _scoreBreakdown: scoreBreakdown || db.getScoreBreakdown(),
-      _domainLabels:   domainLabels   || {},
-      _passMark:       db.getPassMark(),
-      _maxCA:          db.getMaxCA(),
-      _maxExam:        db.getMaxExam(),
+      _gradingScale:       gradingScale       || db.getGradingScale(),
+      _scoreBreakdown:     scoreBreakdown     || db.getScoreBreakdown(),
+      _domainLabels:       domainLabels       || {},
+      _promotionSettings:  promotionSettings  || db.getPromotionSettings(),
+      _passMark:           db.getPassMark(),
+      _maxCA:              db.getMaxCA(),
+      _maxExam:            db.getMaxExam(),
     });
   } catch (e) { return fail(res, 500, e.message); }
 };

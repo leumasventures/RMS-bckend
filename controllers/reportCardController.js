@@ -98,6 +98,124 @@ function computePosition(studentId, cls, arm, term, session) {
 }
 
 /**
+ * Compute cumulative position across all 3 terms for a student in a class.
+ */
+function computeCumulativePosition(studentId, cls, arm, session) {
+  const TERMS     = ['First Term', 'Second Term', 'Third Term'];
+  const classmates = (db.students || []).filter(s => s.class === cls && s.arm === arm && s.active !== false);
+  const scored = classmates.map(s => {
+    const allRes = (db.results || []).filter(r => r.studentId === s.id && r.session === session);
+    const subjects = [...new Set(allRes.map(r => r.subject))];
+    const subAvgs  = subjects.map(sub => {
+      const scores = TERMS.map(t => {
+        const r = allRes.find(x => x.subject === sub && x.term === t);
+        return r ? r.total : null;
+      }).filter(v => v !== null);
+      return scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+    }).filter(v => v !== null);
+    const grandAvg = subAvgs.length ? subAvgs.reduce((a, b) => a + b, 0) / subAvgs.length : 0;
+    return { id: s.id, avg: grandAvg };
+  }).sort((a, b) => b.avg - a.avg);
+
+  const idx = scored.findIndex(s => s.id === studentId);
+  return idx < 0
+    ? { rank: null, outOf: classmates.length, label: 'N/A' }
+    : { rank: idx + 1, outOf: classmates.length, label: `${ordinal(idx + 1)} / ${classmates.length}` };
+}
+
+/**
+ * Compute cumulative data across all 3 terms for one student in a session.
+ */
+function computeCumulative(studentId, session) {
+  const TERMS   = ['First Term', 'Second Term', 'Third Term'];
+  const ps      = db.getPromotionSettings();
+  const passMark= db.getPassMark();
+  const allRes  = (db.results || []).filter(r => r.studentId === studentId && r.session === session);
+  const student = (db.students || []).find(s => s.id === studentId);
+
+  const subjectNames = [...new Set(allRes.map(r => r.subject))];
+
+  const subjects = subjectNames.map(name => {
+    const byTerm = {};
+    TERMS.forEach(t => {
+      const r = allRes.find(x => x.subject === name && x.term === t);
+      byTerm[t] = r ? r.total : null;
+    });
+    const scores = Object.values(byTerm).filter(v => v !== null);
+    const total  = scores.reduce((s, v) => s + v, 0);
+    const avg    = scores.length ? parseFloat((total / scores.length).toFixed(1)) : null;
+    const g      = avg !== null ? gradeOf(avg) : { letter: '—', remark: '—' };
+    return {
+      name,
+      t1:    byTerm['First Term'],
+      t2:    byTerm['Second Term'],
+      t3:    byTerm['Third Term'],
+      total: scores.length === 3 ? total : null,
+      avg,
+      grade:  g.letter,
+      remark: g.remark,
+      passed: avg !== null && avg >= passMark,
+    };
+  });
+
+  const scored  = subjects.filter(s => s.avg !== null);
+  const grandAvg = scored.length
+    ? parseFloat((scored.reduce((s, x) => s + x.avg, 0) / scored.length).toFixed(1))
+    : null;
+
+  const passed   = subjects.filter(s => s.passed).length;
+  const failed   = subjects.filter(s => s.avg !== null && !s.passed).length;
+  const complete = subjects.length > 0 && subjects.every(s => s.total !== null);
+
+  // ── Promotion decision ──────────────────────────────────────────────────
+  let promotion = ps.labelIncomplete || 'INCOMPLETE';
+  const reasons = [];
+
+  if (complete || scored.length >= 3) {
+    let canPromote = true;
+
+    if (ps.useAverage && grandAvg !== null && grandAvg < (ps.minAverage || 40)) {
+      canPromote = false;
+      reasons.push(`Average ${grandAvg}% below required ${ps.minAverage}%`);
+    }
+    if (ps.usePassCount && passed < (ps.minPassCount || 5)) {
+      canPromote = false;
+      reasons.push(`Only ${passed} subject(s) passed — need ${ps.minPassCount}`);
+    }
+    if (ps.useNoFail) {
+      const belowMin = subjects.filter(s => s.avg !== null && s.avg < (ps.noFailMark || 30));
+      if (belowMin.length) {
+        canPromote = false;
+        reasons.push(`${belowMin.length} subject(s) below ${ps.noFailMark}%`);
+      }
+    }
+    if (ps.useAttendance && student) {
+      const att = parseFloat(student.attendance) || 100;
+      if (att < (ps.minAttendance || 75)) {
+        canPromote = false;
+        reasons.push(`Attendance ${att}% below required ${ps.minAttendance}%`);
+      }
+    }
+    if (ps.useCoreSubjects && Array.isArray(ps.coreSubjects)) {
+      const coreFailures = ps.coreSubjects.filter(cn => {
+        const s = subjects.find(x => x.name.toLowerCase() === cn.toLowerCase());
+        return s && s.avg !== null && !s.passed;
+      });
+      if (coreFailures.length) {
+        canPromote = false;
+        reasons.push(`Failed core: ${coreFailures.join(', ')}`);
+      }
+    }
+
+    promotion = canPromote ? (ps.labelPromoted || 'PROMOTED') : (ps.labelRepeat || 'REPEAT');
+  }
+
+  return { subjects, grandAvg, passed, failed, complete, promotion, reasons };
+}
+
+
+
+/**
  * Build a full report-card data object for one student.
  * Includes a row for every subject in db.subjects, with null scores
  * for subjects not yet recorded — prevents a blank card.
@@ -164,6 +282,12 @@ function buildCardData(student, cls, arm, term, session) {
       psychomotor: domainEntry.psychomotor ?? null,
       behavior:    domainEntry.behavior    || {},
     },
+    // Include cumulative data for Third Term cards
+    ...(term === 'Third Term' && db.getPromotionSettings().enableCumulative ? {
+      cumulative: computeCumulative(student.id, session),
+      cumulativePosition: computeCumulativePosition(student.id, cls, arm, session),
+      promotionSettings: db.getPromotionSettings(),
+    } : {}),
   };
 }
 
@@ -402,4 +526,76 @@ exports.setDomains = (req, res) => {
     affectiveLabel:   domainLabel(updated.affective),
     psychomotorLabel: domainLabel(updated.psychomotor),
   });
+};
+/* ── GET /api/results/cumulative?class=&arm=&session= ───────────────────── */
+exports.getCumulative = async (req, res) => {
+  try {
+    const { class: cls, arm, session } = req.query;
+    if (!cls || !arm || !session)
+      return fail(res, 400, 'class, arm, session are required.');
+
+    const students = (db.students || []).filter(s =>
+      s.class === cls && s.arm === arm && s.active !== false
+    );
+    if (!students.length) return ok(res, [], { count: 0 });
+
+    const ps   = db.getPromotionSettings();
+    const rows = students.map(s => ({
+      studentId:   s.id,
+      name:        s.name,
+      class:       s.class,
+      arm:         s.arm,
+      attendance:  s.attendance ?? null,
+      ...computeCumulative(s.id, session),
+    }));
+
+    // Sort by grandAvg descending and add position
+    const ranked = [...rows]
+      .filter(r => r.grandAvg !== null)
+      .sort((a, b) => (b.grandAvg || 0) - (a.grandAvg || 0));
+    ranked.forEach((r, i) => { r.position = i + 1; r.positionLabel = `${ordinal(i + 1)} / ${students.length}`; });
+
+    const unranked = rows.filter(r => r.grandAvg === null);
+
+    const summary = {
+      total:      rows.length,
+      promoted:   rows.filter(r => r.promotion === ps.labelPromoted).length,
+      repeat:     rows.filter(r => r.promotion === ps.labelRepeat).length,
+      incomplete: rows.filter(r => r.promotion === ps.labelIncomplete).length,
+      classAvg:   ranked.length
+        ? parseFloat((ranked.reduce((s, r) => s + r.grandAvg, 0) / ranked.length).toFixed(1))
+        : null,
+    };
+
+    return ok(res, [...ranked, ...unranked], { count: rows.length, summary, promotionSettings: ps });
+  } catch (e) {
+    console.error('[getCumulative]', e.message);
+    return fail(res, 500, e.message);
+  }
+};
+
+/* ── GET /api/results/cumulative/student/:studentId?session= ────────────── */
+exports.getStudentCumulative = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { session }   = req.query;
+    if (!session) return fail(res, 400, 'session is required.');
+
+    const student = (db.students || []).find(s => s.id === studentId);
+    if (!student) return fail(res, 404, 'Student not found.');
+
+    const result = {
+      studentId,
+      name:        student.name,
+      class:       student.class,
+      arm:         student.arm,
+      attendance:  student.attendance ?? null,
+      cumulativePosition: computeCumulativePosition(studentId, student.class, student.arm, session),
+      ...computeCumulative(studentId, session),
+    };
+
+    return ok(res, result, { promotionSettings: db.getPromotionSettings() });
+  } catch (e) {
+    return fail(res, 500, e.message);
+  }
 };
