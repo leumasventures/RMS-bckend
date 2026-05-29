@@ -277,7 +277,7 @@ exports.update = async (req, res) => {
        LEFT JOIN classes c ON c.id = s.class_id WHERE s.id = ?`, [id]);
     if (!row) return fail(res, 404, 'Student not found.');
 
-    const { name, class: cls, arm, gender, dob, parent, phone, attendance } = req.body ?? {};
+    const { name, class: cls, arm, gender, dob, parent, phone, attendance, parent_email, email } = req.body ?? {};
     let classId   = row.class_id;
     let className = row.class_name;
 
@@ -287,27 +287,29 @@ exports.update = async (req, res) => {
       classId = clsObj.id; className = cls;
     }
 
-    const newArm    = arm    ?? row.arm;
-    const newName   = name   ?? row.name;
-    const newGender = gender ?? row.gender;
-    const newDob    = dob    ?? row.dob;
-    const newParent = parent ?? row.parent;
-    const newPhone  = phone  ?? row.phone;
-    let   newAttn   = parseFloat(row.attendance);
+    const newArm         = arm          ?? row.arm;
+    const newName        = name         ?? row.name;
+    const newGender      = gender       ?? row.gender;
+    const newDob         = dob          ?? row.dob;
+    const newParent      = parent       ?? row.parent;
+    const newPhone       = phone        ?? row.phone;
+    const newParentEmail = parent_email !== undefined ? parent_email : (email ?? row.parent_email ?? null);
+    let   newAttn        = parseFloat(row.attendance);
     if (attendance != null) {
       try { newAttn = parseAttendance(attendance); } catch (e) { return fail(res, 400, e.message); }
     }
 
     await db.run(
-      `UPDATE students SET name=?, class_id=?, arm=?, gender=?, dob=?, parent=?, phone=?, attendance=?
+      `UPDATE students SET name=?, class_id=?, arm=?, gender=?, dob=?, parent=?, phone=?, attendance=?, parent_email=?
        WHERE id=?`,
-      [newName, classId, newArm, newGender, newDob || null, newParent, newPhone, newAttn, id]
+      [newName, classId, newArm, newGender, newDob || null, newParent, newPhone, newAttn, newParentEmail || null, id]
     );
 
     const cached = db.findStudent(id);
     if (cached) Object.assign(cached, {
       name: newName, class: className, arm: newArm,
       gender: newGender, dob: newDob || '', parent: newParent,
+      phone: newPhone, attendance: newAttn, parent_email: newParentEmail,
       phone: newPhone, attendance: newAttn,
     });
 

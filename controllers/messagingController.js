@@ -23,44 +23,37 @@ async function buildParentRecipients({ classFilter, armFilter, studentIds }) {
   let sql = `
     SELECT s.id AS studentId, s.name AS studentName,
            s.parent AS parentName, s.phone AS parentPhone,
-           u.email
+           COALESCE(s.parent_email, s.email, u.email) AS email
     FROM students s
-    LEFT JOIN users u ON u.student_id = s.id OR u.ward_id = s.id
+    LEFT JOIN users u ON (u.student_id = s.id OR u.ward_id = s.id) AND u.role = 'Parent'
     WHERE s.active = 1
+      AND COALESCE(s.parent_email, s.email, u.email) IS NOT NULL
+      AND COALESCE(s.parent_email, s.email, u.email) != ''
   `;
   const params = [];
-  if (classFilter) { sql += ' AND s.class_id IN (SELECT id FROM classes WHERE name=?)'; params.push(classFilter); }
-  if (armFilter)   { sql += ' AND s.arm=?'; params.push(armFilter); }
+  if (classFilter) {
+    sql += ' AND s.class_id IN (SELECT id FROM classes WHERE name=?)';
+    params.push(classFilter);
+  }
+  if (armFilter) {
+    sql += ' AND s.arm=?';
+    params.push(armFilter);
+  }
   if (studentIds?.length) {
-    sql += ` AND s.id IN (${studentIds.map(()=>'?').join(',')})`;
+    sql += ` AND s.id IN (${studentIds.map(() => '?').join(',')})`;
     params.push(...studentIds);
   }
+  sql += ' GROUP BY s.id ORDER BY s.name';
 
-  let rows = await db.query(sql, params);
-
-  // Also try parent email stored directly on students table
-  const fallback = await db.query(`
-    SELECT s.id AS studentId, s.name AS studentName,
-           s.parent AS parentName, s.phone AS parentPhone,
-           s.email
-    FROM students s WHERE s.active = 1 AND s.email IS NOT NULL AND s.email != ''
-    ${classFilter ? "AND s.class_id IN (SELECT id FROM classes WHERE name=?)" : ""}
-    ${armFilter   ? "AND s.arm=?" : ""}
-    ${studentIds?.length ? `AND s.id IN (${studentIds.map(()=>'?').join(',')})` : ""}
-  `, [
-    ...(classFilter ? [classFilter] : []),
-    ...(armFilter   ? [armFilter]   : []),
-    ...(studentIds?.length ? studentIds : []),
-  ]).catch(() => []);
-
-  // Merge — prefer users.email, fall back to students.email
-  const byStudent = {};
-  rows.forEach(r => { byStudent[r.studentId] = r; });
-  fallback.forEach(r => {
-    if (!byStudent[r.studentId]?.email && r.email) byStudent[r.studentId] = r;
-  });
-
-  return Object.values(byStudent).filter(r => r.email);
+  const rows = await db.query(sql, params);
+  return rows.map(r => ({
+    studentId:   r.studentId,
+    studentName: r.studentName,
+    name:        r.parentName || r.studentName,
+    parentName:  r.parentName || '',
+    parentPhone: r.parentPhone || '',
+    email:       r.email,
+  }));
 }
 
 /* Build applicant recipients from admissions table */
@@ -225,19 +218,20 @@ exports.preview = async (req, res) => {
     let recipients = [], total = 0, withEmail = 0, withoutEmail = 0;
     if (type === 'class' || type === 'individual') {
       const ids = studentIds ? studentIds.split(',') : undefined;
-      const all = await db.query(
-        `SELECT s.id, s.name FROM students s
-         WHERE s.active=1
-         ${classFilter ? "AND s.class_id IN (SELECT id FROM classes WHERE name=?)" : ""}
-         ${armFilter   ? "AND s.arm=?" : ""}
-         ${ids?.length ? `AND s.id IN (${ids.map(()=>'?').join(',')})` : ""}`,
-        [...(classFilter?[classFilter]:[]), ...(armFilter?[armFilter]:[]), ...(ids||[])]
-      );
-      total = all.length;
+
+      // Total students
+      let totalSql = `SELECT COUNT(DISTINCT s.id) AS n FROM students s WHERE s.active=1`;
+      const totalParams = [];
+      if (classFilter) { totalSql += ' AND s.class_id IN (SELECT id FROM classes WHERE name=?)'; totalParams.push(classFilter); }
+      if (armFilter)   { totalSql += ' AND s.arm=?'; totalParams.push(armFilter); }
+      if (ids?.length) { totalSql += ` AND s.id IN (${ids.map(()=>'?').join(',')})`; totalParams.push(...ids); }
+      const totalRow = await db.query1(totalSql, totalParams);
+      total = Number(totalRow?.n) || 0;
+
       const recs = await buildParentRecipients({
-        classFilter: type==='class' ? classFilter : undefined,
-        armFilter:   type==='class' ? armFilter   : undefined,
-        studentIds:  type==='individual' ? ids : undefined,
+        classFilter: type === 'class' ? classFilter : undefined,
+        armFilter:   type === 'class' ? armFilter   : undefined,
+        studentIds:  type === 'individual' ? ids : undefined,
       });
       withEmail    = recs.length;
       withoutEmail = total - withEmail;
