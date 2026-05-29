@@ -458,8 +458,8 @@ exports.bulkEnroll = async (req, res) => {
       if (!admission)                     { errors.push({ item: i+1, reason: 'Not found.' }); continue; }
       if (admission.status !== 'Approved'){ skipped.push({ item: i+1, reason: `Status: ${admission.status}` }); continue; }
 
-      const cls = item.class_id || admission.class_apply;
-      const arm = item.arm      || admission.preferred_arm;
+      const cls = item.class_id || admission.applying_for_class || admission.class_apply;
+      const arm = item.arm      || admission.assigned_arm || admission.preferred_arm;
       if (!cls || !arm) { errors.push({ item: i+1, reason: 'Missing class/arm.' }); continue; }
 
       const clsObj = db.findClass(cls);
@@ -472,14 +472,17 @@ exports.bulkEnroll = async (req, res) => {
 
         const fullName = [admission.first_name, admission.middle_name, admission.last_name].filter(Boolean).join(' ');
         await db.run(
-          `INSERT INTO students (id,name,class_id,arm,gender,dob,parent,phone,address,attendance,active,status)
-           VALUES (?,?,?,?,?,?,?,?,?,100,1,'active')`,
+          `INSERT INTO students (id,name,class_id,arm,gender,dob,parent,phone,parent_email,address,attendance,active,status)
+           VALUES (?,?,?,?,?,?,?,?,?,?,100,1,'active')`,
           [studentId, fullName, clsObj.id, arm, admission.gender, admission.dob,
-           admission.guardian_name||'', admission.guardian_phone||'', admission.address||'']
+           admission.parent_name||admission.guardian_name||'',
+           admission.parent_phone||admission.guardian_phone||'',
+           admission.parent_email||null,
+           admission.address||'']
         );
         await db.run(
           `UPDATE admissions SET status='Enrolled', assigned_student_id=?, admitted_at=CURDATE(), notes=CONCAT(IFNULL(notes,''),' | Enrolled as ',?) WHERE id=?`,
-          [studentId, admission.id]
+          [studentId, studentId, admission.id]
         );
         const student = { id:studentId, name:fullName, class:cls, arm };
         if (!db.students) db.students = [];
@@ -489,9 +492,12 @@ exports.bulkEnroll = async (req, res) => {
       } catch (e) { errors.push({ item: i+1, reason: e.message }); }
     }
     return res.status(207).json({
-      success: enrolled.length > 0,
-      enrolled: enrolled.length, skipped: skipped.length, errors: errors.length,
+      success:  enrolled.length > 0,
+      enrolled: enrolled,
+      skipped:  skipped,
+      errors:   errors,
       data: { enrolled, skipped, errors },
+      counts: { enrolled: enrolled.length, skipped: skipped.length, errors: errors.length },
     });
   } catch (e) { return fail(res, 500, e.message); }
 };
