@@ -230,7 +230,11 @@ exports.getClassAllocation = async (req, res) => {
       `SELECT s.id, s.name, s.code, s.level, s.type
        FROM class_subject_allocations a JOIN subjects s ON s.id=a.subject_id
        WHERE a.class_id=? AND a.arm=? ORDER BY s.name`, [clsRow.id, arm]);
-    return ok(res, rows);
+    // Return both the full objects AND a plain names array for easy use
+    return ok(res, rows, {
+      subjects: rows.map(s => s.name),  // ← plain string array
+      count: rows.length,
+    });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
