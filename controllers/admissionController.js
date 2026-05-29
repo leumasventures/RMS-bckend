@@ -280,6 +280,29 @@ exports.create = async (req, res) => {
       'SELECT * FROM admissions WHERE id=?', [result.insertId]
     );
     console.log(`[admissions] created id=${result.insertId} name="${first_name} ${last_name}"`);
+
+    // Auto-send acknowledgement email to parent (non-blocking — never fails the request)
+    if (saved && saved.parent_email) {
+      setImmediate(async () => {
+        try {
+          const emailSvc = require('../services/emailService');
+          const settings = await require('../config/db').getSettings().catch(() => ({}));
+          const school   = {
+            name:      settings.school_name      || 'Sacred Heart College Eziukwu Aba',
+            address:   settings.school_address   || 'Aba, Abia State',
+            phone:     settings.school_phone     || '',
+            email:     settings.school_email     || '',
+            principal: settings.principal_name   || 'The Principal',
+          };
+          const tmpl = emailSvc.templates.admissionAcknowledgement(normaliseRow(saved), school);
+          await emailSvc.sendEmail({ to: saved.parent_email, ...tmpl });
+          console.log('[admissions] ack email sent to', saved.parent_email);
+        } catch(e) {
+          console.warn('[admissions] ack email failed:', e.message);
+        }
+      });
+    }
+
     return ok(res, normaliseRow(saved), {}, 201);
 
   } catch (e) {
