@@ -238,17 +238,24 @@ exports.create = async (req, res) => {
     const dobVal = (dob && String(dob).match(/^\d{4}-\d{2}-\d{2}$/)) ? dob : null;
     if (!dobVal) console.warn('[admissions/create] Invalid dob value:', dob);
 
+    // Generate unique application number: ADM/YY/NNNN
+    const year2d  = new Date().getFullYear().toString().slice(-2);
+    const countRow = await db.query1('SELECT COUNT(*) AS n FROM admissions');
+    const seqNum   = String((Number(countRow?.n) || 0) + 1).padStart(4, '0');
+    const appNo    = `ADM/${year2d}/${seqNum}`;
+
     const result = await db.run(
       `INSERT INTO admissions
-         (first_name, last_name, middle_name, gender, dob,
+         (application_no, first_name, last_name, middle_name, gender, dob,
           blood_group, genotype, state_origin, lga, address,
           applying_for_class, preferred_arm, session, entry_term,
           prev_school, last_class,
           parent_name, guardian_first, guardian_last,
           parent_phone, parent_email, guardian_addr, relation,
           status, notes, applied_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Pending',?,CURDATE())`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Pending',?,CURDATE())`,
       [
+        appNo,
         String(first_name).trim(),
         String(last_name).trim(),
         middle_name    || null,
