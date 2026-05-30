@@ -90,29 +90,38 @@ exports.getByStudent = async (req, res) => {
 exports.getClassList = async (req, res) => {
   try {
     const { class: cls, arm } = req.query;
-    if (!cls || !arm) return fail(res, 400, 'class and arm are required.');
-    if (!canActOnClass(req.user, cls, arm)) return fail(res, 403, 'Access denied.');
+    if (!cls) return fail(res, 400, 'class is required.');
 
-    const students = await db.query(
-      `SELECT s.*, c.name AS class_name FROM students s
+    // arm is optional — if omitted, return all arms for the class
+    const armFilter = arm || null;
+
+    let studentSql = `SELECT s.*, c.name AS class_name FROM students s
        LEFT JOIN classes c ON c.id=s.class_id
-       WHERE c.name=? AND s.arm=? AND s.active=1 ORDER BY s.name`,
-      [cls, arm]
-    );
-    const tokens = await db.query('SELECT * FROM access_tokens WHERE class_name=? AND arm=?', [cls, arm]);
+       WHERE c.name=? AND s.active=1`;
+    const studentParams = [cls];
+    if (armFilter) { studentSql += ' AND s.arm=?'; studentParams.push(armFilter); }
+    studentSql += ' ORDER BY s.arm, s.name';
+
+    let tokenSql = 'SELECT * FROM access_tokens WHERE class_name=?';
+    const tokenParams = [cls];
+    if (armFilter) { tokenSql += ' AND arm=?'; tokenParams.push(armFilter); }
+
+    const students = await db.query(studentSql, studentParams);
+    const tokens   = await db.query(tokenSql, tokenParams);
 
     const data = students.map(s => {
-      const st = tokens.filter(t => t.student_id === s.id).map(normalise);
+      const st     = tokens.filter(t => t.student_id === s.id).map(normalise);
       const active = st.filter(t => t.status === 'active');
       const latest = active[0] || null;
       return {
-        studentId: s.id, studentName: s.name, class: cls, arm,
+        studentId: s.id, studentName: s.name,
+        class: cls, arm: s.arm,
         activeCount: active.length, totalCount: st.length,
         latestCode: latest?.code || null, expiresAt: latest?.expiresAt || null,
         status: latest ? 'active' : st.length ? 'no active code' : 'none',
       };
     });
-    return ok(res, data, { class: cls, arm, total: data.length });
+    return ok(res, data, { class: cls, arm: armFilter, total: data.length });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
