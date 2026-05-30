@@ -6,6 +6,30 @@
 const db     = require('../config/db');
 const crypto = require('crypto');
 
+/* ── Auto-create table if missing ──────────────────────────────────────── */
+let _tableReady = false;
+async function ensureTable() {
+  if (_tableReady) return;
+  try {
+    await db.run(`CREATE TABLE IF NOT EXISTS access_tokens (
+      code         VARCHAR(40)  NOT NULL PRIMARY KEY,
+      student_id   VARCHAR(30)  NOT NULL,
+      student_name VARCHAR(120) DEFAULT NULL,
+      class_name   VARCHAR(60)  DEFAULT NULL,
+      arm          VARCHAR(10)  DEFAULT NULL,
+      term         VARCHAR(30)  DEFAULT NULL,
+      session      VARCHAR(20)  DEFAULT NULL,
+      expires_at   DATETIME     NOT NULL,
+      max_uses     INT UNSIGNED DEFAULT NULL,
+      used         INT UNSIGNED NOT NULL DEFAULT 0,
+      revoked      TINYINT(1)   NOT NULL DEFAULT 0,
+      created_by   VARCHAR(120) DEFAULT NULL,
+      created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    _tableReady = true;
+  } catch(e) { console.warn('[access-tokens] ensureTable:', e.message); }
+}
+
 const TOKEN_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 const fail = (res, s, m) => res.status(s).json({ success: false, message: m });
