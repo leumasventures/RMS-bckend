@@ -404,11 +404,24 @@ exports.enroll = async (req, res) => {
     const clsObj = db.findClass(cls);
     if (!clsObj) return fail(res, 400, `Class "${cls}" does not exist.`);
 
-    // Generate student ID
-    const existing = await db.query('SELECT id FROM students');
-    const ids = new Set(existing.map(s => s.id));
-    let n = ids.size + 1, studentId;
-    do { studentId = `SHC/${String(n).padStart(3,'0')}`; n++; } while (ids.has(studentId));
+    // Generate student ID — SAHARCO/YYYYMMDD/NNNN using today as admission date
+    const _admDate = new Date();
+    const _ds = _admDate.getFullYear().toString()
+      + String(_admDate.getMonth()+1).padStart(2,'0')
+      + String(_admDate.getDate()).padStart(2,'0');
+    const _prefix = `SAHARCO/${_ds}/`;
+    const _last = await db.query1(
+      `SELECT id FROM students WHERE id LIKE ? ORDER BY CAST(SUBSTRING_INDEX(id,'/',-1) AS UNSIGNED) DESC LIMIT 1`,
+      [`${_prefix}%`]
+    ).catch(()=>null);
+    let _serial = 1;
+    if (_last?.id) { const s = parseInt(_last.id.split('/').pop(),10); if(!isNaN(s)) _serial = s+1; }
+    let studentId;
+    for (let _a=0; _a<500; _a++) {
+      studentId = `${_prefix}${String(_serial+_a).padStart(4,'0')}`;
+      const _ex = await db.query1('SELECT id FROM students WHERE id=?',[studentId]).catch(()=>null);
+      if (!_ex) break;
+    }
 
     const fullName = [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(' ');
 
@@ -466,9 +479,24 @@ exports.bulkEnroll = async (req, res) => {
       if (!clsObj) { errors.push({ item: i+1, reason: `Class "${cls}" not found.` }); continue; }
 
       try {
-        const allIds   = new Set((await db.query('SELECT id FROM students')).map(s => s.id));
-        let n = allIds.size + 1, studentId;
-        do { studentId = `SHC/${String(n).padStart(3,'0')}`; n++; } while (allIds.has(studentId));
+        // Generate SAHARCO/YYYYMMDD/NNNN student ID
+        const _aDate = new Date();
+        const _dStr = _aDate.getFullYear().toString()
+          + String(_aDate.getMonth()+1).padStart(2,'0')
+          + String(_aDate.getDate()).padStart(2,'0');
+        const _pfx = `SAHARCO/${_dStr}/`;
+        const _lr = await db.query1(
+          `SELECT id FROM students WHERE id LIKE ? ORDER BY CAST(SUBSTRING_INDEX(id,'/',-1) AS UNSIGNED) DESC LIMIT 1`,
+          [`${_pfx}%`]
+        ).catch(()=>null);
+        let _ser = 1;
+        if (_lr?.id) { const _s=parseInt(_lr.id.split('/').pop(),10); if(!isNaN(_s)) _ser=_s+1; }
+        let studentId;
+        for (let _at=0; _at<500; _at++) {
+          studentId = `${_pfx}${String(_ser+_at).padStart(4,'0')}`;
+          const _exists = await db.query1('SELECT id FROM students WHERE id=?',[studentId]).catch(()=>null);
+          if (!_exists) break;
+        }
 
         const fullName = [admission.first_name, admission.middle_name, admission.last_name].filter(Boolean).join(' ');
         await db.run(

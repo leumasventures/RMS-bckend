@@ -28,25 +28,36 @@ function resolveId(req) {
     : req.params.id;
 }
 
-async function generateStudentId() {
-  // Query DB directly — don't trust in-memory cache which may be stale
+async function generateStudentId(admissionDate) {
+  // Format: SAHARCO/YYYYMMDD/NNNN
+  // admissionDate: Date object or ISO string — defaults to today
+  const d = admissionDate ? new Date(admissionDate) : new Date();
+  const dateStr = d.getFullYear().toString()
+    + String(d.getMonth() + 1).padStart(2, '0')
+    + String(d.getDate()).padStart(2, '0');
+
+  const prefix = `SAHARCO/${dateStr}/`;
+
+  // Find highest serial for this admission date
   const row = await db.query1(
-    `SELECT id FROM students WHERE id LIKE 'SHC/%' ORDER BY CAST(SUBSTRING(id,5) AS UNSIGNED) DESC LIMIT 1`
-  );
+    `SELECT id FROM students WHERE id LIKE ? ORDER BY CAST(SUBSTRING_INDEX(id,'/',-1) AS UNSIGNED) DESC LIMIT 1`,
+    [`${prefix}%`]
+  ).catch(() => null);
+
   let next = 1;
-  if (row && row.id) {
-    const num = parseInt(row.id.replace('SHC/', ''), 10);
-    if (!isNaN(num)) next = num + 1;
+  if (row?.id) {
+    const serial = parseInt(row.id.split('/').pop(), 10);
+    if (!isNaN(serial)) next = serial + 1;
   }
+
   // Keep incrementing until we find a free slot
-  let id;
   for (let attempts = 0; attempts < 500; attempts++) {
-    id = `SHC/${String(next + attempts).padStart(3, '0')}`;
-    const exists = await db.query1('SELECT id FROM students WHERE id = ?', [id]);
+    const id = `${prefix}${String(next + attempts).padStart(4, '0')}`;
+    const exists = await db.query1('SELECT id FROM students WHERE id=?', [id]).catch(() => null);
     if (!exists) return id;
   }
-  // Fallback: timestamp-based
-  return `SHC/${Date.now()}`;
+  // Fallback: timestamp serial
+  return `${prefix}${Date.now()}`;
 }
 
 function parseAttendance(val) {
@@ -183,7 +194,7 @@ exports.create = async (req, res) => {
     const armRow = await db.query1('SELECT arm FROM class_arms WHERE class_id = ? AND arm = ?', [clsObj.id, arm]);
     if (!armRow) return fail(res, 400, `Arm "${arm}" does not exist in "${cls}".`);
 
-    const id = rawId ? String(rawId).trim() : await generateStudentId();
+    const id = rawId ? String(rawId).trim() : await generateStudentId(req.body.date_of_admission || req.body.admission_date || new Date());
     const existing = await db.query1('SELECT id FROM students WHERE id = ?', [id]);
     if (existing) return fail(res, 409, `Student ID "${id}" already exists.`);
 
@@ -239,7 +250,7 @@ exports.bulkCreate = async (req, res) => {
       else gender = 'Male'; // default
 
       try {
-        const id = await generateStudentId();
+        const id = await generateStudentId(row.date_of_admission || row.admission_date || new Date());
         await db.run(
           `INSERT INTO students (id, name, class_id, arm, gender, dob, parent, phone, attendance, active, status)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 100, 1, 'active')`,
