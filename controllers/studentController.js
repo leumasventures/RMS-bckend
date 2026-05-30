@@ -30,34 +30,36 @@ function resolveId(req) {
 
 async function generateStudentId(admissionDate) {
   // Format: SAHARCO/YYYYMMDD/NNNN
-  // admissionDate: Date object or ISO string — defaults to today
+  // Serial is GLOBAL and continuous (0001 → 9999 then wraps back to 0001).
+  // It never resets per date — only the date component reflects admission day.
   const d = admissionDate ? new Date(admissionDate) : new Date();
   const dateStr = d.getFullYear().toString()
     + String(d.getMonth() + 1).padStart(2, '0')
     + String(d.getDate()).padStart(2, '0');
 
-  const prefix = `SAHARCO/${dateStr}/`;
-
-  // Find highest serial for this admission date
+  // Find the highest serial across ALL SAHARCO IDs regardless of date
   const row = await db.query1(
-    `SELECT id FROM students WHERE id LIKE ? ORDER BY CAST(SUBSTRING_INDEX(id,'/',-1) AS UNSIGNED) DESC LIMIT 1`,
-    [`${prefix}%`]
+    `SELECT id FROM students WHERE id LIKE 'SAHARCO/%'
+     ORDER BY CAST(SUBSTRING_INDEX(id,'/',-1) AS UNSIGNED) DESC LIMIT 1`
   ).catch(() => null);
 
   let next = 1;
   if (row?.id) {
     const serial = parseInt(row.id.split('/').pop(), 10);
-    if (!isNaN(serial)) next = serial + 1;
+    if (!isNaN(serial)) {
+      next = serial >= 9999 ? 1 : serial + 1; // wrap at 9999
+    }
   }
 
   // Keep incrementing until we find a free slot
-  for (let attempts = 0; attempts < 500; attempts++) {
-    const id = `${prefix}${String(next + attempts).padStart(4, '0')}`;
+  for (let attempts = 0; attempts < 9999; attempts++) {
+    const serial = ((next - 1 + attempts) % 9999) + 1; // stays 1–9999
+    const id = `SAHARCO/${dateStr}/${String(serial).padStart(4, '0')}`;
     const exists = await db.query1('SELECT id FROM students WHERE id=?', [id]).catch(() => null);
     if (!exists) return id;
   }
-  // Fallback: timestamp serial
-  return `${prefix}${Date.now()}`;
+  // Absolute fallback
+  return `SAHARCO/${dateStr}/${Date.now()}`;
 }
 
 function parseAttendance(val) {
