@@ -56,6 +56,7 @@ function canActOnClass(user, cls, arm) {
 
 /* ── GET /api/access-tokens ───────────────────────────────────────────────── */
 exports.getAll = async (req, res) => {
+  await ensureTable();
   try {
     const { studentId, class: cls, arm, status } = req.query;
     let sql = 'SELECT * FROM access_tokens WHERE 1=1';
@@ -88,6 +89,7 @@ exports.getByStudent = async (req, res) => {
 
 /* ── GET /api/access-tokens/class-list ────────────────────────────────────── */
 exports.getClassList = async (req, res) => {
+  await ensureTable();
   try {
     const { class: cls, arm } = req.query;
     if (!cls) return fail(res, 400, 'class is required.');
@@ -157,6 +159,7 @@ exports.getOne = async (req, res) => {
 
 /* ── POST /api/access-tokens — generate single ────────────────────────────── */
 exports.generate = async (req, res) => {
+  await ensureTable();
   try {
     const { studentId, expiryDays = 30, term, session, maxUses } = req.body;
     if (!studentId) return fail(res, 400, 'studentId is required.');
