@@ -118,37 +118,61 @@ exports.getClassList = async (req, res) => {
     const { class: cls, arm } = req.query;
     if (!cls) return fail(res, 400, 'class is required.');
 
-    // arm is optional — if omitted, return all arms for the class
     const armFilter = arm || null;
 
-    let studentSql = `SELECT s.*, c.name AS class_name FROM students s
-       LEFT JOIN classes c ON c.id=s.class_id
-       WHERE c.name=? AND s.active=1`;
-    const studentParams = [cls];
-    if (armFilter) { studentSql += ' AND s.arm=?'; studentParams.push(armFilter); }
-    studentSql += ' ORDER BY s.arm, s.name';
+    // Get students — handle different schema variants (active column may not exist)
+    let students = [];
+    try {
+      let studentSql = `SELECT s.id, s.name, s.arm, s.parent_email,
+         COALESCE(c.name, s.class_name) AS class_name
+         FROM students s
+         LEFT JOIN classes c ON c.id = s.class_id
+         WHERE COALESCE(c.name, s.class_name) = ?`;
+      const studentParams = [cls];
+      if (armFilter) { studentSql += ' AND s.arm=?'; studentParams.push(armFilter); }
+      studentSql += ' ORDER BY s.arm, s.name';
+      students = await db.query(studentSql, studentParams);
+    } catch(e1) {
+      // Fallback: use in-memory cache
+      console.warn('[access-tokens/getClassList] DB query failed, using cache:', e1.message);
+      students = (db.students || []).filter(s =>
+        (s.class === cls || s.class_name === cls) &&
+        (!armFilter || s.arm === armFilter)
+      ).map(s => ({ id: s.id, name: s.name, arm: s.arm, class_name: s.class || s.class_name }));
+    }
 
-    let tokenSql = 'SELECT * FROM access_tokens WHERE class_name=?';
-    const tokenParams = [cls];
-    if (armFilter) { tokenSql += ' AND arm=?'; tokenParams.push(armFilter); }
-
-    const students = await db.query(studentSql, studentParams);
-    const tokens   = await db.query(tokenSql, tokenParams);
+    let tokens = [];
+    try {
+      let tokenSql = 'SELECT * FROM access_tokens WHERE class_name=?';
+      const tokenParams = [cls];
+      if (armFilter) { tokenSql += ' AND arm=?'; tokenParams.push(armFilter); }
+      tokens = await db.query(tokenSql, tokenParams);
+    } catch(e2) {
+      console.warn('[access-tokens/getClassList] token query failed:', e2.message);
+    }
 
     const data = students.map(s => {
       const st     = tokens.filter(t => t.student_id === s.id).map(normalise);
       const active = st.filter(t => t.status === 'active');
       const latest = active[0] || null;
       return {
-        studentId: s.id, studentName: s.name,
-        class: cls, arm: s.arm,
-        activeCount: active.length, totalCount: st.length,
-        latestCode: latest?.code || null, expiresAt: latest?.expiresAt || null,
-        status: latest ? 'active' : st.length ? 'no active code' : 'none',
+        studentId:   s.id,
+        studentName: s.name,
+        class:       cls,
+        arm:         s.arm,
+        activeCount: active.length,
+        totalCount:  st.length,
+        latestCode:  latest?.code   || null,
+        expiresAt:   latest?.expiresAt || null,
+        status:      latest ? 'active' : st.length ? 'no active code' : 'none',
       };
     });
+
     return ok(res, data, { class: cls, arm: armFilter, total: data.length });
-  } catch (e) { return fail(res, 500, e.message); }
+  } catch (e) {
+    console.error('[access-tokens/getClassList]', e.message, e.code);
+    return fail(res, 500, `Database error: ${e.message}`);
+  }
 };
 
 /* ── GET /api/access-tokens/export/csv ───────────────────────────────────── */
