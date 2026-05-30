@@ -8,6 +8,25 @@ const router    = express.Router();
 const adminOnly = authorize('Admin');
 const staffOnly = authorize('Admin', 'Teacher');
 
+router.options('*', (_req, res) => res.sendStatus(204));
+
+/* ── Public: parent portal verification — no auth required ── */
+router.get('/parent-verify/:id', (req, res) => {
+  try {
+    const db = require('../config/db');
+    const student = db.findStudent(req.params.id);
+    if (!student) return res.status(404).json({ success: false, message: 'Student not found.' });
+    return res.json({ success: true, data: {
+      id:           student.id,
+      name:         student.name,
+      class:        student.class || student.class_name || '',
+      arm:          student.arm   || '',
+      phone:        student.phone || student.parent_phone || '',
+      parent_phone: student.parent_phone || student.phone || '',
+    }});
+  } catch(e) { return res.status(500).json({ success: false, message: e.message }); }
+});
+
 router.use(authenticate);
 
 /* ── Named / aggregate routes — BEFORE /:id ────────────────────────────── */
