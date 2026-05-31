@@ -27,8 +27,8 @@ exports.getAll = async (req, res) => {
     return ok(res, rows.map(r => {
       const ca   = Number(r.ca   ?? 0);
       const exam = Number(r.exam ?? 0);
-      const tot  = (r.total != null && !isNaN(Number(r.total))) ? Number(r.total) : ca + exam;
-      const g = grade(tot);
+      const tot  = ca + exam;   // always recompute — never trust DB GENERATED column
+      const g    = grade(tot);
       return { ...r, studentId: r.student_id, subject: r.subject_name,
                ca, exam, total: tot, gradeLabel: g.grade, remark: g.remark };
     }), { count: rows.length });
@@ -67,9 +67,9 @@ exports.create = async (req, res) => {
     }
 
     await db.run(
-      `INSERT INTO results (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE ca=VALUES(ca), exam=VALUES(exam)`,
+      `INSERT INTO results (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam, total)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE ca=VALUES(ca), exam=VALUES(exam), total=VALUES(total)`,
       [studentId, classId, student.arm, subj?.id || null, subject, term, session, caVal, examVal]
     );
 
@@ -119,10 +119,10 @@ exports.bulkCreate = async (req, res) => {
 
       try {
         await db.run(
-          `INSERT INTO results (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE ca=VALUES(ca), exam=VALUES(exam)`,
-          [studentId, student.class_id, student.arm, subj?.id || null, subjectName, termVal, sessionVal, caVal, examVal]
+          `INSERT INTO results (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam, total)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE ca=VALUES(ca), exam=VALUES(exam), total=VALUES(total)`,
+          [studentId, student.class_id, student.arm, subj?.id || null, subjectName, termVal, sessionVal, caVal, examVal, caVal + examVal]
         );
         saved++;
       } catch { skipped++; }
@@ -144,7 +144,7 @@ exports.update = async (req, res) => {
     const examVal = req.body.exam != null ? Math.min(maxExam, Math.max(0, parseInt(req.body.exam))) : row.exam;
     const total   = caVal + examVal;
 
-    await db.run('UPDATE results SET ca=?, exam=? WHERE id=?', [caVal, examVal, id]);
+    await db.run('UPDATE results SET ca=?, exam=?, total=? WHERE id=?', [caVal, examVal, caVal + examVal, id]);
     const updated = await db.query1('SELECT * FROM results WHERE id=?', [id]);
     const g = grade(updated?.total ?? caVal + examVal);
     return ok(res, { ...updated, studentId: updated?.student_id, subject: updated?.subject_name, gradeLabel: g.grade, remark: g.remark });
@@ -220,7 +220,7 @@ exports.getReportCard = async (req, res) => {
     const graded = rows.map(r => {
       const ca   = Number(r.ca   ?? 0);
       const exam = Number(r.exam ?? 0);
-      const tot  = (r.total != null && !isNaN(Number(r.total))) ? Number(r.total) : ca + exam;
+      const tot  = ca + exam;   // always recompute
       return { ...r, studentId: r.student_id, subject: r.subject_name,
                ca, exam, total: tot, subject_name: r.subject_name, ...grade(tot) };
     });
