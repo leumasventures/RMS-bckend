@@ -24,31 +24,35 @@ async function ensureTables() {
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await run(`CREATE TABLE IF NOT EXISTS fee_payments (
-    id           VARCHAR(40)  NOT NULL PRIMARY KEY,
-    student_id   VARCHAR(30)  NOT NULL,
-    fee_type     VARCHAR(120) NOT NULL,
+    id           VARCHAR(40)   NOT NULL PRIMARY KEY,
+    student_id   VARCHAR(30)   NOT NULL,
+    fee_type     VARCHAR(120)  NOT NULL,
     amount       DECIMAL(12,2) NOT NULL DEFAULT 0,
     payment_date DATE,
-    term         VARCHAR(30)  DEFAULT NULL,
-    session      VARCHAR(20)  DEFAULT NULL,
+    term         VARCHAR(30)   DEFAULT NULL,
+    session      VARCHAR(20)   DEFAULT NULL,
     status       ENUM('Paid','Partial','Unpaid','Waived') NOT NULL DEFAULT 'Unpaid',
-    reference    VARCHAR(120) DEFAULT NULL,
+    reference    VARCHAR(120)  DEFAULT NULL,
     note         TEXT,
-    created_by   VARCHAR(80)  DEFAULT NULL,
+    created_by   VARCHAR(80)   DEFAULT NULL,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await run(`CREATE TABLE IF NOT EXISTS fee_ledger (
-    id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    student_id   VARCHAR(30)  NOT NULL,
-    entry_type   VARCHAR(20)  NOT NULL DEFAULT 'charge',
-    description  VARCHAR(255) NOT NULL,
-    debit        DECIMAL(12,2) NOT NULL DEFAULT 0,
-    credit       DECIMAL(12,2) NOT NULL DEFAULT 0,
-    balance      DECIMAL(12,2) NOT NULL DEFAULT 0,
-    term         VARCHAR(30)  DEFAULT NULL,
-    session      VARCHAR(20)  DEFAULT NULL,
-    reference    VARCHAR(120) DEFAULT NULL,
-    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    student_id    VARCHAR(30)   NOT NULL,
+    payment_id    VARCHAR(40)   DEFAULT NULL,
+    entry_type    VARCHAR(20)   NOT NULL DEFAULT 'charge',
+    description   VARCHAR(255)  NOT NULL,
+    debit         DECIMAL(12,2) NOT NULL DEFAULT 0,
+    credit        DECIMAL(12,2) NOT NULL DEFAULT 0,
+    balance       DECIMAL(12,2) NOT NULL DEFAULT 0,
+    term          VARCHAR(30)   DEFAULT NULL,
+    session       VARCHAR(20)   DEFAULT NULL,
+    academic_year VARCHAR(20)   DEFAULT NULL,
+    class_at_time VARCHAR(60)   DEFAULT NULL,
+    reference     VARCHAR(120)  DEFAULT NULL,
+    created_by    VARCHAR(80)   DEFAULT NULL,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await run(`CREATE TABLE IF NOT EXISTS levy_payments (
     id           VARCHAR(40)  NOT NULL PRIMARY KEY,
@@ -605,7 +609,7 @@ async function _autoChargeStudents({ feeType, amount, level, className, term, se
     // Build student query based on who this fee targets
     let sql = `SELECT s.*, c.name AS class_name, c.level AS class_level
                FROM students s LEFT JOIN classes c ON c.id = s.class_id
-               WHERE s.active = 1`;
+               WHERE COALESCE(s.active, 1) = 1`;
     const p = [];
 
     if (className) {
