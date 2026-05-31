@@ -43,18 +43,8 @@ try { db = require('../config/db'); } catch { db = null; }
 
 /* ─── static student seed ────────────────────────────────────────────────── */
 // Used when db.findStudent() is unavailable or returns null (demo mode).
-const STUDENT_SEED = {
-  'SHC/001': { id:'SHC/001', name:'Chidubem Okonkwo', class:'SS 2',  arm:'A', gender:'Male'   },
-  'SHC/002': { id:'SHC/002', name:'Adaeze Nwosu',      class:'SS 1',  arm:'B', gender:'Female' },
-  'SHC/003': { id:'SHC/003', name:'Emeka Eze',          class:'JSS 3', arm:'A', gender:'Male'   },
-  'SHC/004': { id:'SHC/004', name:'Chioma Okafor',      class:'SS 3',  arm:'A', gender:'Female' },
-  'SHC/005': { id:'SHC/005', name:'Ifeanyi Nzube',      class:'JSS 1', arm:'B', gender:'Male'   },
-  'SHC/006': { id:'SHC/006', name:'Ngozi Ibe',           class:'JSS 2', arm:'A', gender:'Female' },
-  'SHC/007': { id:'SHC/007', name:'Obinna Orji',         class:'SS 1',  arm:'A', gender:'Male'   },
-  'SHC/008': { id:'SHC/008', name:'Amara Ugochukwu',     class:'JSS 3', arm:'B', gender:'Female' },
-  'SHC/009': { id:'SHC/009', name:'Kelechi Obi',         class:'SS 2',  arm:'B', gender:'Male'   },
-  'SHC/010': { id:'SHC/010', name:'Nneka Mbah',          class:'JSS 1', arm:'A', gender:'Female' },
-};
+// No hardcoded students — all lookups use live DB via db.findStudent()
+const STUDENT_SEED = {};
 
 function _findStudent(studentId) {
   return db?.findStudent?.(studentId) || STUDENT_SEED[studentId] || null;
@@ -79,224 +69,9 @@ function _gradeInfo(score) {
 /* ─── static result sheets ───────────────────────────────────────────────── */
 // Key: `${studentId}::${session}::${term}`
 // Subject objects now include `teacher` field (from document-10).
-const RESULT_SHEETS = {
+// RESULT_SHEETS removed — all results come from live DB
+const RESULT_SHEETS = {};
 
-  'SHC/001::2024/2025::First Term': {
-    studentId:'SHC/001', session:'2024/2025', term:'First Term',
-    classTeacher:'Mr Emeka Nwosu', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:40, position:14, resumptionDate:'2025-01-13',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mr Emeka Nwosu',   ca1:13, ca2:12, exam:46, total:71 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:11, ca2:12, exam:45, total:68 },
-      { code:'BIO', name:'Biology',          teacher:'Mrs Ifeoma Okeke', ca1:14, ca2:14, exam:48, total:76 },
-      { code:'CHM', name:'Chemistry',        teacher:'Dr Chibuike Obi',  ca1:9,  ca2:9,  exam:40, total:58 },
-      { code:'GEO', name:'Geography',        teacher:'Mr Samuel Nnaji',  ca1:12, ca2:12, exam:46, total:70 },
-      { code:'CMP', name:'Computer Studies', teacher:'Mrs Adaora Nze',   ca1:16, ca2:15, exam:52, total:83 },
-    ],
-    classTeacherRemark:'He has made a fair start. Consistency is key going forward.',
-    principalRemark:'A decent first term. There is room for improvement.',
-    affective:{ punctuality:'Good', neatness:'Good', politeness:'Very Good', cooperation:'Good', attentiveness:'Fair' },
-    psychomotor:{ drawing:'Good', sports:'Very Good', handwriting:'Fair' },
-  },
-
-  'SHC/001::2024/2025::Second Term': {
-    studentId:'SHC/001', session:'2024/2025', term:'Second Term',
-    classTeacher:'Mr Emeka Nwosu', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:40, position:12, resumptionDate:'2025-04-28',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mr Emeka Nwosu',   ca1:14, ca2:14, exam:50, total:78 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:12, ca2:13, exam:47, total:72 },
-      { code:'BIO', name:'Biology',          teacher:'Mrs Ifeoma Okeke', ca1:15, ca2:15, exam:50, total:80 },
-      { code:'CHM', name:'Chemistry',        teacher:'Dr Chibuike Obi',  ca1:10, ca2:10, exam:45, total:65 },
-      { code:'GEO', name:'Geography',        teacher:'Mr Samuel Nnaji',  ca1:13, ca2:13, exam:48, total:74 },
-      { code:'CMP', name:'Computer Studies', teacher:'Mrs Adaora Nze',   ca1:17, ca2:16, exam:55, total:88 },
-    ],
-    classTeacherRemark:'Chidubem shows good potential. He needs to dedicate more time to Chemistry.',
-    principalRemark:'A satisfactory performance. Keep striving for excellence.',
-    affective:{ punctuality:'Very Good', neatness:'Good', politeness:'Excellent', cooperation:'Good', attentiveness:'Good' },
-    psychomotor:{ drawing:'Good', sports:'Very Good', handwriting:'Good' },
-  },
-
-  'SHC/002::2024/2025::First Term': {
-    studentId:'SHC/002', session:'2024/2025', term:'First Term',
-    classTeacher:'Mrs Ngozi Eze', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:38, position:5, resumptionDate:'2025-01-13',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mr Emeka Nwosu',   ca1:15, ca2:16, exam:50, total:81 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:14, ca2:14, exam:52, total:80 },
-      { code:'BSC', name:'Basic Science',    teacher:'Mrs Ifeoma Okeke', ca1:13, ca2:13, exam:48, total:74 },
-      { code:'SST', name:'Social Studies',   teacher:'Mr Samuel Nnaji',  ca1:12, ca2:12, exam:46, total:70 },
-      { code:'ART', name:'Fine Arts',        teacher:'Mr Chibuike Obi',  ca1:16, ca2:16, exam:54, total:86 },
-      { code:'MUS', name:'Music',            teacher:'Mrs Adaora Nze',   ca1:11, ca2:12, exam:46, total:69 },
-    ],
-    classTeacherRemark:'Adaeze has made an excellent start. She shows strength in all subjects.',
-    principalRemark:'Very impressive first term. Continue to work hard.',
-    affective:{ punctuality:'Excellent', neatness:'Excellent', politeness:'Excellent', cooperation:'Very Good', attentiveness:'Excellent' },
-    psychomotor:{ drawing:'Excellent', sports:'Good', handwriting:'Excellent' },
-  },
-
-  'SHC/002::2024/2025::Second Term': {
-    studentId:'SHC/002', session:'2024/2025', term:'Second Term',
-    classTeacher:'Mrs Ngozi Eze', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:38, position:3, resumptionDate:'2025-04-28',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mr Emeka Nwosu',   ca1:17, ca2:16, exam:57, total:90 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:16, ca2:16, exam:56, total:88 },
-      { code:'BSC', name:'Basic Science',    teacher:'Mrs Ifeoma Okeke', ca1:15, ca2:15, exam:54, total:84 },
-      { code:'SST', name:'Social Studies',   teacher:'Mr Samuel Nnaji',  ca1:13, ca2:14, exam:52, total:79 },
-      { code:'ART', name:'Fine Arts',        teacher:'Mr Chibuike Obi',  ca1:17, ca2:18, exam:58, total:93 },
-      { code:'MUS', name:'Music',            teacher:'Mrs Adaora Nze',   ca1:12, ca2:13, exam:51, total:76 },
-    ],
-    classTeacherRemark:'Adaeze is a highly motivated student who excels in virtually every subject.',
-    principalRemark:'An outstanding performance. Continue to aim for the top.',
-    affective:{ punctuality:'Excellent', neatness:'Excellent', politeness:'Excellent', cooperation:'Excellent', attentiveness:'Excellent' },
-    psychomotor:{ drawing:'Excellent', sports:'Good', handwriting:'Excellent' },
-  },
-
-  'SHC/003::2024/2025::Second Term': {
-    studentId:'SHC/003', session:'2024/2025', term:'Second Term',
-    classTeacher:'Mrs Ifeoma Okeke', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:35, position:21, resumptionDate:'2025-04-28',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mr Emeka Nwosu',   ca1:10, ca2:10, exam:44, total:64 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:12, ca2:12, exam:47, total:71 },
-      { code:'BSC', name:'Basic Science',    teacher:'Mrs Ifeoma Okeke', ca1:13, ca2:13, exam:49, total:75 },
-      { code:'SST', name:'Social Studies',   teacher:'Mr Samuel Nnaji',  ca1:11, ca2:11, exam:46, total:68 },
-      { code:'ART', name:'Creative Arts',    teacher:'Mr Chibuike Obi',  ca1:14, ca2:14, exam:52, total:80 },
-      { code:'BTH', name:'Basic Technology', teacher:'Mrs Adaora Nze',   ca1:9,  ca2:9,  exam:37, total:55 },
-    ],
-    classTeacherRemark:'Emeka has a natural talent for the arts. He must improve his Mathematics and Technology scores.',
-    principalRemark:'Moderate performance. Encourage him to put in more effort.',
-    affective:{ punctuality:'Fair', neatness:'Good', politeness:'Good', cooperation:'Good', attentiveness:'Fair' },
-    psychomotor:{ drawing:'Excellent', sports:'Good', handwriting:'Fair' },
-  },
-
-  'SHC/004::2024/2025::Second Term': {
-    studentId:'SHC/004', session:'2024/2025', term:'Second Term',
-    classTeacher:'Mrs Adaora Nze', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:42, position:1, resumptionDate:'2025-04-28',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mrs Adaora Nze',   ca1:18, ca2:17, exam:60, total:95 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:17, ca2:17, exam:58, total:92 },
-      { code:'CHM', name:'Chemistry',        teacher:'Dr Chibuike Obi',  ca1:16, ca2:15, exam:58, total:89 },
-      { code:'BIO', name:'Biology',          teacher:'Mrs Ifeoma Okeke', ca1:17, ca2:17, exam:60, total:94 },
-      { code:'PHY', name:'Physics',          teacher:'Mr Emeka Nwosu',   ca1:15, ca2:15, exam:58, total:88 },
-      { code:'GEO', name:'Geography',        teacher:'Mr Samuel Nnaji',  ca1:15, ca2:15, exam:57, total:87 },
-    ],
-    classTeacherRemark:'Chioma is exceptional. Her dedication and intellect set a benchmark for all students.',
-    principalRemark:'Outstanding! You are a pride of Sacred Heart College.',
-    affective:{ punctuality:'Excellent', neatness:'Excellent', politeness:'Excellent', cooperation:'Excellent', attentiveness:'Excellent' },
-    psychomotor:{ drawing:'Very Good', sports:'Good', handwriting:'Excellent' },
-  },
-
-  'SHC/005::2024/2025::Second Term': {
-    studentId:'SHC/005', session:'2024/2025', term:'Second Term',
-    classTeacher:'Mrs Ifeoma Okeke', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:36, position:15, resumptionDate:'2025-04-28',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mr Emeka Nwosu',   ca1:11, ca2:11, exam:46, total:68 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:12, ca2:13, exam:49, total:74 },
-      { code:'BSC', name:'Basic Science',    teacher:'Mrs Ifeoma Okeke', ca1:13, ca2:14, exam:50, total:77 },
-      { code:'SST', name:'Social Studies',   teacher:'Mr Samuel Nnaji',  ca1:12, ca2:11, exam:47, total:70 },
-      { code:'ART', name:'Creative Arts',    teacher:'Mr Chibuike Obi',  ca1:14, ca2:15, exam:53, total:82 },
-      { code:'BTH', name:'Basic Technology', teacher:'Mrs Adaora Nze',   ca1:10, ca2:11, exam:44, total:65 },
-    ],
-    classTeacherRemark:'Ifeanyi shows creativity in practical subjects. Consistent revision will improve his core scores.',
-    principalRemark:'A fair performance. More effort is needed in Mathematics.',
-    affective:{ punctuality:'Good', neatness:'Fair', politeness:'Good', cooperation:'Very Good', attentiveness:'Good' },
-    psychomotor:{ drawing:'Very Good', sports:'Excellent', handwriting:'Good' },
-  },
-
-  'SHC/006::2024/2025::Second Term': {
-    studentId:'SHC/006', session:'2024/2025', term:'Second Term',
-    classTeacher:'Mrs Ngozi Eze', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:34, position:5, resumptionDate:'2025-04-28',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mr Emeka Nwosu',   ca1:15, ca2:15, exam:56, total:86 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:14, ca2:15, exam:55, total:84 },
-      { code:'BSC', name:'Basic Science',    teacher:'Mrs Ifeoma Okeke', ca1:14, ca2:14, exam:52, total:80 },
-      { code:'SST', name:'Social Studies',   teacher:'Mr Samuel Nnaji',  ca1:14, ca2:14, exam:54, total:82 },
-      { code:'ART', name:'Fine Arts',        teacher:'Mr Chibuike Obi',  ca1:16, ca2:16, exam:57, total:89 },
-      { code:'MUS', name:'Music',            teacher:'Mrs Adaora Nze',   ca1:12, ca2:12, exam:51, total:75 },
-    ],
-    classTeacherRemark:'Ngozi is a well-rounded student with a strong work ethic.',
-    principalRemark:'Very good results. Keep up the great work, Ngozi.',
-    affective:{ punctuality:'Excellent', neatness:'Excellent', politeness:'Excellent', cooperation:'Very Good', attentiveness:'Excellent' },
-    psychomotor:{ drawing:'Very Good', sports:'Good', handwriting:'Very Good' },
-  },
-
-  'SHC/007::2024/2025::Second Term': {
-    studentId:'SHC/007', session:'2024/2025', term:'Second Term',
-    classTeacher:'Mr Emeka Nwosu', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:40, position:8, resumptionDate:'2025-04-28',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mr Emeka Nwosu',   ca1:14, ca2:15, exam:53, total:82 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:13, ca2:13, exam:52, total:78 },
-      { code:'BIO', name:'Biology',          teacher:'Mrs Ifeoma Okeke', ca1:13, ca2:12, exam:50, total:75 },
-      { code:'CHM', name:'Chemistry',        teacher:'Dr Chibuike Obi',  ca1:11, ca2:12, exam:48, total:71 },
-      { code:'GEO', name:'Geography',        teacher:'Mr Samuel Nnaji',  ca1:15, ca2:15, exam:53, total:83 },
-      { code:'CMP', name:'Computer Studies', teacher:'Mrs Adaora Nze',   ca1:16, ca2:15, exam:55, total:86 },
-    ],
-    classTeacherRemark:'Obinna demonstrates consistent effort. He excels in STEM and should challenge himself further.',
-    principalRemark:'A good performance. We expect even better results next term.',
-    affective:{ punctuality:'Good', neatness:'Good', politeness:'Very Good', cooperation:'Very Good', attentiveness:'Good' },
-    psychomotor:{ drawing:'Good', sports:'Very Good', handwriting:'Good' },
-  },
-
-  'SHC/008::2024/2025::Second Term': {
-    studentId:'SHC/008', session:'2024/2025', term:'Second Term',
-    classTeacher:'Mrs Ngozi Eze', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:33, position:2, resumptionDate:'2025-04-28',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mr Emeka Nwosu',   ca1:16, ca2:16, exam:59, total:91 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:16, ca2:15, exam:58, total:89 },
-      { code:'BSC', name:'Basic Science',    teacher:'Mrs Ifeoma Okeke', ca1:15, ca2:14, exam:56, total:85 },
-      { code:'SST', name:'Social Studies',   teacher:'Mr Samuel Nnaji',  ca1:14, ca2:14, exam:54, total:82 },
-      { code:'ART', name:'Creative Arts',    teacher:'Mr Chibuike Obi',  ca1:18, ca2:17, exam:59, total:94 },
-      { code:'MUS', name:'Music',            teacher:'Mrs Adaora Nze',   ca1:14, ca2:13, exam:53, total:80 },
-    ],
-    classTeacherRemark:'Amara is an outstanding student with exceptional artistic talent.',
-    principalRemark:'Brilliant performance. Aim for the top spot next term!',
-    affective:{ punctuality:'Excellent', neatness:'Excellent', politeness:'Excellent', cooperation:'Excellent', attentiveness:'Excellent' },
-    psychomotor:{ drawing:'Outstanding', sports:'Good', handwriting:'Excellent' },
-  },
-
-  'SHC/009::2024/2025::Second Term': {
-    studentId:'SHC/009', session:'2024/2025', term:'Second Term',
-    classTeacher:'Mr Samuel Nnaji', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:40, position:10, resumptionDate:'2025-04-28',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mr Emeka Nwosu',   ca1:14, ca2:13, exam:53, total:80 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:12, ca2:13, exam:50, total:75 },
-      { code:'BIO', name:'Biology',          teacher:'Mrs Ifeoma Okeke', ca1:13, ca2:13, exam:51, total:77 },
-      { code:'CHM', name:'Chemistry',        teacher:'Dr Chibuike Obi',  ca1:10, ca2:11, exam:47, total:68 },
-      { code:'GEO', name:'Geography',        teacher:'Mr Samuel Nnaji',  ca1:13, ca2:14, exam:52, total:79 },
-      { code:'CMP', name:'Computer Studies', teacher:'Mrs Adaora Nze',   ca1:15, ca2:15, exam:54, total:84 },
-    ],
-    classTeacherRemark:'Kelechi performs well in Technology and Mathematics. He should work on improving Chemistry.',
-    principalRemark:'Good performance. Sustained effort will take you higher.',
-    affective:{ punctuality:'Good', neatness:'Good', politeness:'Good', cooperation:'Good', attentiveness:'Good' },
-    psychomotor:{ drawing:'Good', sports:'Very Good', handwriting:'Good' },
-  },
-
-  'SHC/010::2024/2025::Second Term': {
-    studentId:'SHC/010', session:'2024/2025', term:'Second Term',
-    classTeacher:'Mrs Ifeoma Okeke', principal:'Rev. Fr. Augustine Eze',
-    numberOfStudents:36, position:2, resumptionDate:'2025-04-28',
-    subjects:[
-      { code:'MTH', name:'Mathematics',      teacher:'Mr Emeka Nwosu',   ca1:16, ca2:17, exam:59, total:92 },
-      { code:'ENG', name:'English Language', teacher:'Mrs Ngozi Eze',    ca1:16, ca2:16, exam:58, total:90 },
-      { code:'BSC', name:'Basic Science',    teacher:'Mrs Ifeoma Okeke', ca1:15, ca2:15, exam:56, total:86 },
-      { code:'SST', name:'Social Studies',   teacher:'Mr Samuel Nnaji',  ca1:14, ca2:15, exam:56, total:85 },
-      { code:'ART', name:'Fine Arts',        teacher:'Mr Chibuike Obi',  ca1:16, ca2:17, exam:58, total:91 },
-      { code:'BTH', name:'Basic Technology', teacher:'Mrs Adaora Nze',   ca1:14, ca2:14, exam:52, total:80 },
-    ],
-    classTeacherRemark:'Nneka is a brilliant and hardworking student. She leads by example.',
-    principalRemark:'Outstanding performance. We are proud of you, Nneka!',
-    affective:{ punctuality:'Excellent', neatness:'Excellent', politeness:'Excellent', cooperation:'Excellent', attentiveness:'Excellent' },
-    psychomotor:{ drawing:'Excellent', sports:'Very Good', handwriting:'Excellent' },
-  },
-};
 
 /* ─── class comparison data ──────────────────────────────────────────────── */
 const CLASS_STATS = {
@@ -313,18 +88,9 @@ const CLASS_STATS = {
 };
 
 /* ─── inline assessment store ────────────────────────────────────────────── */
-const ASSESSMENT_STORE = {
-  'SHC/001':[ {title:'Mathematics — CA Test 2',date:'2025-03-18',score:78,outOf:100,type:'CA'},{title:'Chemistry — Practical',date:'2025-03-14',score:65,outOf:100,type:'Practical'},{title:'English — Essay',date:'2025-03-11',score:72,outOf:100,type:'CA'},{title:'Computer Studies — Project',date:'2025-03-07',score:88,outOf:100,type:'Project'},{title:'Biology — Quiz 4',date:'2025-03-04',score:80,outOf:100,type:'Quiz'},{title:'Geography — Assignment',date:'2025-02-28',score:74,outOf:100,type:'Assignment'} ],
-  'SHC/002':[ {title:'Fine Arts — Portfolio',date:'2025-03-20',score:93,outOf:100,type:'Project'},{title:'Mathematics — Mid-Term',date:'2025-03-17',score:90,outOf:100,type:'Exam'},{title:'English — Comprehension',date:'2025-03-13',score:88,outOf:100,type:'CA'},{title:'Social Studies — Assignment',date:'2025-03-10',score:79,outOf:100,type:'Assignment'},{title:'Music — Practical',date:'2025-03-06',score:76,outOf:100,type:'Practical'} ],
-  'SHC/003':[ {title:'Creative Arts — Project',date:'2025-03-19',score:80,outOf:100,type:'Project'},{title:'Basic Science — Quiz 3',date:'2025-03-15',score:75,outOf:100,type:'Quiz'},{title:'Mathematics — CA Test',date:'2025-03-12',score:64,outOf:100,type:'CA'},{title:'English — Composition',date:'2025-03-08',score:71,outOf:100,type:'CA'},{title:'Basic Technology — Drawing',date:'2025-03-05',score:55,outOf:100,type:'Practical'} ],
-  'SHC/004':[ {title:'Biology — Mid-Term Exam',date:'2025-03-21',score:94,outOf:100,type:'Exam'},{title:'Mathematics — Test 3',date:'2025-03-18',score:95,outOf:100,type:'CA'},{title:'Chemistry — Lab Practical',date:'2025-03-14',score:89,outOf:100,type:'Practical'},{title:'English — Oral & Written',date:'2025-03-11',score:92,outOf:100,type:'CA'},{title:'Physics — Assignment',date:'2025-03-07',score:88,outOf:100,type:'Assignment'} ],
-  'SHC/005':[ {title:'Creative Arts — Drawing',date:'2025-03-19',score:82,outOf:100,type:'CA'},{title:'Basic Science — Test',date:'2025-03-15',score:77,outOf:100,type:'CA'},{title:'English — Reading',date:'2025-03-11',score:74,outOf:100,type:'CA'},{title:'Mathematics — CA 2',date:'2025-03-08',score:68,outOf:100,type:'CA'},{title:'Social Studies — Quiz',date:'2025-03-05',score:70,outOf:100,type:'Quiz'} ],
-  'SHC/006':[ {title:'Fine Arts — Portfolio',date:'2025-03-20',score:89,outOf:100,type:'Project'},{title:'Mathematics — CA Test',date:'2025-03-16',score:86,outOf:100,type:'CA'},{title:'Basic Science — Practical',date:'2025-03-12',score:80,outOf:100,type:'Practical'},{title:'English — Essay',date:'2025-03-09',score:84,outOf:100,type:'CA'},{title:'Music — Practical',date:'2025-03-05',score:75,outOf:100,type:'Practical'} ],
-  'SHC/007':[ {title:'Geography — Field Report',date:'2025-03-20',score:83,outOf:100,type:'Project'},{title:'Mathematics — Test 3',date:'2025-03-17',score:82,outOf:100,type:'CA'},{title:'English — Composition',date:'2025-03-13',score:78,outOf:100,type:'CA'},{title:'Computer Studies — Quiz',date:'2025-03-09',score:86,outOf:100,type:'Quiz'},{title:'Chemistry — Lab Report',date:'2025-03-05',score:71,outOf:100,type:'Practical'} ],
-  'SHC/008':[ {title:'Creative Arts — Final Piece',date:'2025-03-21',score:94,outOf:100,type:'Project'},{title:'Mathematics — CA Test 2',date:'2025-03-17',score:91,outOf:100,type:'CA'},{title:'English — Reading/Writing',date:'2025-03-13',score:89,outOf:100,type:'CA'},{title:'Basic Science — Test',date:'2025-03-10',score:85,outOf:100,type:'CA'},{title:'Music — Choir Recital',date:'2025-03-06',score:80,outOf:100,type:'Practical'} ],
-  'SHC/009':[ {title:'Computer Studies — Project',date:'2025-03-20',score:84,outOf:100,type:'Project'},{title:'Mathematics — Mid-Term',date:'2025-03-17',score:80,outOf:100,type:'Exam'},{title:'Geography — Assignment',date:'2025-03-13',score:79,outOf:100,type:'Assignment'},{title:'English — Oral Test',date:'2025-03-09',score:75,outOf:100,type:'CA'},{title:'Chemistry — Lab',date:'2025-03-05',score:68,outOf:100,type:'Practical'} ],
-  'SHC/010':[ {title:'Fine Arts — Portfolio',date:'2025-03-21',score:91,outOf:100,type:'Project'},{title:'Mathematics — CA Test 2',date:'2025-03-18',score:92,outOf:100,type:'CA'},{title:'English — Essay',date:'2025-03-13',score:90,outOf:100,type:'CA'},{title:'Social Studies — Quiz',date:'2025-03-10',score:85,outOf:100,type:'Quiz'},{title:'Basic Science — Practical',date:'2025-03-06',score:86,outOf:100,type:'Practical'} ],
-};
+// Mock assessments removed — use live DB
+const RECENT_ASSESSMENTS = {};
+
 
 /* ─── helpers ────────────────────────────────────────────────────────────── */
 
