@@ -11,6 +11,7 @@ let _tablesReady = false;
 async function ensureTables() {
   if (_tablesReady) return;
   const run = sql => db.run(sql).catch(e => console.warn('[fees] ensureTable:', e.message));
+
   await run(`CREATE TABLE IF NOT EXISTS fee_structure (
     id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     label       VARCHAR(120) NOT NULL,
@@ -23,6 +24,7 @@ async function ensureTables() {
     description TEXT,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
   await run(`CREATE TABLE IF NOT EXISTS fee_payments (
     id           VARCHAR(40)   NOT NULL PRIMARY KEY,
     student_id   VARCHAR(30)   NOT NULL,
@@ -31,12 +33,13 @@ async function ensureTables() {
     payment_date DATE,
     term         VARCHAR(30)   DEFAULT NULL,
     session      VARCHAR(20)   DEFAULT NULL,
-    status       ENUM('Paid','Partial','Unpaid','Waived') NOT NULL DEFAULT 'Unpaid',
+    status       VARCHAR(20)   NOT NULL DEFAULT 'Unpaid',
     reference    VARCHAR(120)  DEFAULT NULL,
     note         TEXT,
     created_by   VARCHAR(80)   DEFAULT NULL,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
   await run(`CREATE TABLE IF NOT EXISTS fee_ledger (
     id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     student_id    VARCHAR(30)   NOT NULL,
@@ -54,19 +57,31 @@ async function ensureTables() {
     created_by    VARCHAR(80)   DEFAULT NULL,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+  // Add any missing columns to fee_ledger (if table pre-existed with old schema)
+  for (const col of [
+    "ALTER TABLE fee_ledger ADD COLUMN IF NOT EXISTS payment_id    VARCHAR(40) DEFAULT NULL",
+    "ALTER TABLE fee_ledger ADD COLUMN IF NOT EXISTS academic_year VARCHAR(20) DEFAULT NULL",
+    "ALTER TABLE fee_ledger ADD COLUMN IF NOT EXISTS class_at_time VARCHAR(60) DEFAULT NULL",
+    "ALTER TABLE fee_ledger ADD COLUMN IF NOT EXISTS created_by    VARCHAR(80) DEFAULT NULL",
+    "ALTER TABLE fee_payments ADD COLUMN IF NOT EXISTS note TEXT",
+    "ALTER TABLE fee_payments ADD COLUMN IF NOT EXISTS created_by VARCHAR(80) DEFAULT NULL",
+  ]) { await run(col); }
+
   await run(`CREATE TABLE IF NOT EXISTS levy_payments (
-    id           VARCHAR(40)  NOT NULL PRIMARY KEY,
-    student_id   VARCHAR(30)  NOT NULL,
-    levy_name    VARCHAR(120) NOT NULL,
-    category     VARCHAR(60)  DEFAULT NULL,
+    id           VARCHAR(40)   NOT NULL PRIMARY KEY,
+    student_id   VARCHAR(30)   NOT NULL,
+    levy_name    VARCHAR(120)  NOT NULL,
+    category     VARCHAR(60)   DEFAULT NULL,
     amount_paid  DECIMAL(12,2) NOT NULL DEFAULT 0,
-    due_date     DATE         DEFAULT NULL,
-    term         VARCHAR(30)  DEFAULT NULL,
-    session      VARCHAR(20)  DEFAULT NULL,
-    status       ENUM('Paid','Partial','Unpaid','Waived','Exempt') NOT NULL DEFAULT 'Unpaid',
-    reference    VARCHAR(120) DEFAULT NULL,
+    due_date     DATE          DEFAULT NULL,
+    term         VARCHAR(30)   DEFAULT NULL,
+    session      VARCHAR(20)   DEFAULT NULL,
+    status       VARCHAR(20)   NOT NULL DEFAULT 'Unpaid',
+    reference    VARCHAR(120)  DEFAULT NULL,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
   _tablesReady = true;
   console.log('[fees] tables ensured');
 }
@@ -84,7 +99,7 @@ exports.getStructure = async (req, res) => {
     if (cls)     { sql += ' AND (class_name=? OR class_name IS NULL)'; p.push(cls); }
     if (term)    { sql += ' AND (term=? OR term IS NULL)'; p.push(term); }
     if (session) { sql += ' AND (session=? OR session IS NULL)'; p.push(session); }
-    sql += ' ORDER BY class_name IS NULL, class_name, label';
+    sql += ' ORDER BY ISNULL(class_name), class_name, label';
     const rows = await db.query(sql, p);
     return ok(res, rows, { count: rows.length });
   } catch (e) { return fail(res, 500, e.message); }
@@ -306,15 +321,16 @@ exports.bulkCharge = async (req, res) => {
   await ensureTables();
   try {
     const { class: cls, arm, feeType, amount, term, session, dueDate } = req.body ?? {};
-    if (!cls || !feeType || !amount || !term)
-      return fail(res, 400, 'class, feeType, amount, term are required.');
+    if (!feeType || !amount || !term)
+      return fail(res, 400, 'feeType, amount, term are required.');
 
     const students = await db.query(
       `SELECT s.*, c.name AS class_name FROM students s LEFT JOIN classes c ON c.id=s.class_id
-       WHERE c.name=? AND s.active=1${arm ? ' AND s.arm=?' : ''} ORDER BY s.name`,
-      arm ? [cls, arm] : [cls]
+       WHERE COALESCE(s.active,1)=1${cls ? ' AND c.name=?' : ''}${arm ? ' AND s.arm=?' : ''} ORDER BY s.name`,
+      [...(cls ? [cls] : []), ...(arm ? [arm] : [])]
     );
-    if (!students.length) return fail(res, 404, `No active students found in ${cls}${arm ? ' ' + arm : ''}.`);
+    if (!students.length) return ok(res, { charged: 0, skipped: 0, students: [] },
+      { message: `No active students found${cls ? ' in ' + cls : ''}${arm ? ' ' + arm : ''}.` });
 
     const charged = [], skipped = [];
     for (const student of students) {

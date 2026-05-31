@@ -24,6 +24,68 @@ const db   = require('../config/db');
 const fail = (res, s, m) => res.status(s).json({ success: false, message: m });
 const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: true, ...meta, data });
 
+/* ── Auto-create tables if missing ──────────────────────────────────── */
+let _tablesReady = false;
+async function ensureTables() {
+  if (_tablesReady) return;
+  const run = sql => db.run(sql).catch(e => console.warn('[student-finance] ensureTable:', e.message));
+  await run(`CREATE TABLE IF NOT EXISTS fee_payments (
+    id           VARCHAR(40)   NOT NULL PRIMARY KEY,
+    student_id   VARCHAR(30)   NOT NULL,
+    fee_type     VARCHAR(120)  NOT NULL,
+    amount       DECIMAL(12,2) NOT NULL DEFAULT 0,
+    payment_date DATE,
+    term         VARCHAR(30)   DEFAULT NULL,
+    session      VARCHAR(20)   DEFAULT NULL,
+    status       VARCHAR(20)   NOT NULL DEFAULT 'Unpaid',
+    reference    VARCHAR(120)  DEFAULT NULL,
+    note         TEXT,
+    created_by   VARCHAR(80)   DEFAULT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await run(`CREATE TABLE IF NOT EXISTS fee_ledger (
+    id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    student_id    VARCHAR(30)   NOT NULL,
+    payment_id    VARCHAR(40)   DEFAULT NULL,
+    entry_type    VARCHAR(20)   NOT NULL DEFAULT 'charge',
+    description   VARCHAR(255)  NOT NULL,
+    debit         DECIMAL(12,2) NOT NULL DEFAULT 0,
+    credit        DECIMAL(12,2) NOT NULL DEFAULT 0,
+    balance       DECIMAL(12,2) NOT NULL DEFAULT 0,
+    term          VARCHAR(30)   DEFAULT NULL,
+    session       VARCHAR(20)   DEFAULT NULL,
+    academic_year VARCHAR(20)   DEFAULT NULL,
+    class_at_time VARCHAR(60)   DEFAULT NULL,
+    reference     VARCHAR(120)  DEFAULT NULL,
+    created_by    VARCHAR(80)   DEFAULT NULL,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await run(`CREATE TABLE IF NOT EXISTS levy_payments (
+    id           VARCHAR(40)   NOT NULL PRIMARY KEY,
+    student_id   VARCHAR(30)   NOT NULL,
+    levy_name    VARCHAR(120)  NOT NULL,
+    category     VARCHAR(60)   DEFAULT NULL,
+    amount_paid  DECIMAL(12,2) NOT NULL DEFAULT 0,
+    due_date     DATE          DEFAULT NULL,
+    term         VARCHAR(30)   DEFAULT NULL,
+    session      VARCHAR(20)   DEFAULT NULL,
+    status       VARCHAR(20)   NOT NULL DEFAULT 'Unpaid',
+    reference    VARCHAR(120)  DEFAULT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  // Add missing columns to existing tables
+  for (const col of [
+    "ALTER TABLE fee_ledger ADD COLUMN IF NOT EXISTS payment_id    VARCHAR(40) DEFAULT NULL",
+    "ALTER TABLE fee_ledger ADD COLUMN IF NOT EXISTS academic_year VARCHAR(20) DEFAULT NULL",
+    "ALTER TABLE fee_ledger ADD COLUMN IF NOT EXISTS class_at_time VARCHAR(60) DEFAULT NULL",
+    "ALTER TABLE fee_ledger ADD COLUMN IF NOT EXISTS created_by    VARCHAR(80) DEFAULT NULL",
+    "ALTER TABLE fee_payments ADD COLUMN IF NOT EXISTS note        TEXT",
+    "ALTER TABLE fee_payments ADD COLUMN IF NOT EXISTS created_by  VARCHAR(80) DEFAULT NULL",
+  ]) { await run(col); }
+  _tablesReady = true;
+  console.log('[student-finance] tables ensured');
+}
+
 /* ── guard: caller must be Admin, or the student themselves, or their parent ── */
 function canAccess(user, studentId) {
   // Admin, Bursar, Teacher, Staff: can view any student
@@ -68,6 +130,7 @@ async function getLedgerMeta(studentId) {
    Returns student profile + ledger meta + unpaid counts in one hit.
 ════════════════════════════════════════════════════════════════ */
 exports.getSummary = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     if (!canAccess(req.user, studentId))
@@ -149,6 +212,7 @@ exports.getSummary = async (req, res) => {
    GET /api/student-finance/:studentId/charges
 ════════════════════════════════════════════════════════════════ */
 exports.getCharges = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     if (!canAccess(req.user, studentId)) return fail(res, 403, 'Access denied.');
@@ -180,6 +244,7 @@ exports.getCharges = async (req, res) => {
    GET /api/student-finance/:studentId/payments
 ════════════════════════════════════════════════════════════════ */
 exports.getPayments = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     if (!canAccess(req.user, studentId)) return fail(res, 403, 'Access denied.');
@@ -205,6 +270,7 @@ exports.getPayments = async (req, res) => {
    GET /api/student-finance/:studentId/levies
 ════════════════════════════════════════════════════════════════ */
 exports.getLevies = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     if (!canAccess(req.user, studentId)) return fail(res, 403, 'Access denied.');
@@ -233,6 +299,7 @@ exports.getLevies = async (req, res) => {
    GET /api/student-finance/:studentId/ledger
 ════════════════════════════════════════════════════════════════ */
 exports.getLedger = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     if (!canAccess(req.user, studentId)) return fail(res, 403, 'Access denied.');
@@ -263,6 +330,7 @@ exports.getLedger = async (req, res) => {
    Used for printing/PDF generation.
 ════════════════════════════════════════════════════════════════ */
 exports.getStatement = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     if (!canAccess(req.user, studentId)) return fail(res, 403, 'Access denied.');
@@ -326,6 +394,7 @@ exports.getStatement = async (req, res) => {
    Body: { chargeId, amountPaid, date, method, reference, note }
 ════════════════════════════════════════════════════════════════ */
 exports.recordPayment = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     if (req.user.role !== 'Admin' && req.user.role !== 'Teacher' && req.user.role !== 'Bursar')
@@ -398,6 +467,7 @@ exports.recordPayment = async (req, res) => {
    Body: { feeType, amount, date, term, session, reference }
 ════════════════════════════════════════════════════════════════ */
 exports.addCharge = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     if (req.user.role !== 'Admin' && req.user.role !== 'Teacher' && req.user.role !== 'Bursar')
@@ -450,6 +520,7 @@ exports.addCharge = async (req, res) => {
    Body: { type: 'credit'|'debit'|'refund', amount, description, term, session, reference }
 ════════════════════════════════════════════════════════════════ */
 exports.addAdjustment = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     if (req.user.role !== 'Admin')
@@ -496,6 +567,7 @@ exports.addAdjustment = async (req, res) => {
    Returns structured receipt data for one payment.
 ════════════════════════════════════════════════════════════════ */
 exports.getReceipt = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId, paymentId } = req.params;
     if (!canAccess(req.user, studentId)) return fail(res, 403, 'Access denied.');
@@ -537,6 +609,7 @@ exports.getReceipt = async (req, res) => {
    CSV export of full ledger.
 ════════════════════════════════════════════════════════════════ */
 exports.exportCSV = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     if (!canAccess(req.user, studentId)) return fail(res, 403, 'Access denied.');
