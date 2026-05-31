@@ -25,8 +25,12 @@ exports.getAll = async (req, res) => {
     sql += ' ORDER BY s.name, r.subject_name';
     const rows = await db.query(sql, p);
     return ok(res, rows.map(r => {
-      const g = grade(r.total || 0);
-      return { ...r, studentId: r.student_id, subject: r.subject_name, gradeLabel: g.grade, remark: g.remark };
+      const ca   = Number(r.ca   ?? 0);
+      const exam = Number(r.exam ?? 0);
+      const tot  = (r.total != null && !isNaN(Number(r.total))) ? Number(r.total) : ca + exam;
+      const g = grade(tot);
+      return { ...r, studentId: r.student_id, subject: r.subject_name,
+               ca, exam, total: tot, gradeLabel: g.grade, remark: g.remark };
     }), { count: rows.length });
   } catch (e) { return fail(res, 500, e.message); }
 };
@@ -213,10 +217,16 @@ exports.getReportCard = async (req, res) => {
     const rows = await db.query(
       'SELECT * FROM results WHERE student_id=? AND term=? AND session=? ORDER BY subject_name',
       [studentId, term, session]);
-    const total = rows.reduce((a, r) => a + r.total, 0);
-    const avg   = rows.length ? parseFloat((total / rows.length).toFixed(1)) : 0;
-    const graded = rows.map(r => ({ ...r, ...grade(r.total) }));
-    return ok(res, { studentId, term, session, results: graded, average: avg, totalScore: total });
+    const graded = rows.map(r => {
+      const ca   = Number(r.ca   ?? 0);
+      const exam = Number(r.exam ?? 0);
+      const tot  = (r.total != null && !isNaN(Number(r.total))) ? Number(r.total) : ca + exam;
+      return { ...r, studentId: r.student_id, subject: r.subject_name,
+               ca, exam, total: tot, subject_name: r.subject_name, ...grade(tot) };
+    });
+    const totalScore = graded.reduce((a, r) => a + r.total, 0);
+    const avg = graded.length ? parseFloat((totalScore / graded.length).toFixed(1)) : 0;
+    return ok(res, { studentId, term, session, results: graded, average: avg, totalScore });
   } catch (e) { return fail(res, 500, e.message); }
 };
 
