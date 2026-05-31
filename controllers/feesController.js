@@ -1,21 +1,77 @@
 'use strict';
 /**
  * feesController.js — Sacred Heart College (SAHARCO)
- *
- * Fee Structure: per-class, per-term, per-level fee schedules
- * Fee Payments:  individual payment records
- * Fee Ledger:    comprehensive lifetime account per student (debit/credit/balance)
  */
 const db = require('../config/db');
 const fail = (res, s, m) => res.status(s).json({ success: false, message: m });
 const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: true, ...meta, data });
 
-/* ══════════════════════════════════════════════════════════════════════════
-   FEE STRUCTURE
-══════════════════════════════════════════════════════════════════════════ */
+/* ── Auto-create tables if they don't exist ──────────────────────────── */
+let _tablesReady = false;
+async function ensureTables() {
+  if (_tablesReady) return;
+  const run = sql => db.run(sql).catch(e => console.warn('[fees] ensureTable:', e.message));
+  await run(`CREATE TABLE IF NOT EXISTS fee_structure (
+    id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    label       VARCHAR(120) NOT NULL,
+    amount      DECIMAL(12,2) NOT NULL DEFAULT 0,
+    level       VARCHAR(20)  DEFAULT 'All',
+    class_name  VARCHAR(60)  DEFAULT NULL,
+    term        VARCHAR(30)  DEFAULT NULL,
+    session     VARCHAR(20)  DEFAULT NULL,
+    mandatory   TINYINT(1)   NOT NULL DEFAULT 1,
+    description TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await run(`CREATE TABLE IF NOT EXISTS fee_payments (
+    id           VARCHAR(40)  NOT NULL PRIMARY KEY,
+    student_id   VARCHAR(30)  NOT NULL,
+    fee_type     VARCHAR(120) NOT NULL,
+    amount       DECIMAL(12,2) NOT NULL DEFAULT 0,
+    payment_date DATE,
+    term         VARCHAR(30)  DEFAULT NULL,
+    session      VARCHAR(20)  DEFAULT NULL,
+    status       ENUM('Paid','Partial','Unpaid','Waived') NOT NULL DEFAULT 'Unpaid',
+    reference    VARCHAR(120) DEFAULT NULL,
+    note         TEXT,
+    created_by   VARCHAR(80)  DEFAULT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await run(`CREATE TABLE IF NOT EXISTS fee_ledger (
+    id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    student_id   VARCHAR(30)  NOT NULL,
+    entry_type   VARCHAR(20)  NOT NULL DEFAULT 'charge',
+    description  VARCHAR(255) NOT NULL,
+    debit        DECIMAL(12,2) NOT NULL DEFAULT 0,
+    credit       DECIMAL(12,2) NOT NULL DEFAULT 0,
+    balance      DECIMAL(12,2) NOT NULL DEFAULT 0,
+    term         VARCHAR(30)  DEFAULT NULL,
+    session      VARCHAR(20)  DEFAULT NULL,
+    reference    VARCHAR(120) DEFAULT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await run(`CREATE TABLE IF NOT EXISTS levy_payments (
+    id           VARCHAR(40)  NOT NULL PRIMARY KEY,
+    student_id   VARCHAR(30)  NOT NULL,
+    levy_name    VARCHAR(120) NOT NULL,
+    category     VARCHAR(60)  DEFAULT NULL,
+    amount_paid  DECIMAL(12,2) NOT NULL DEFAULT 0,
+    due_date     DATE         DEFAULT NULL,
+    term         VARCHAR(30)  DEFAULT NULL,
+    session      VARCHAR(20)  DEFAULT NULL,
+    status       ENUM('Paid','Partial','Unpaid','Waived','Exempt') NOT NULL DEFAULT 'Unpaid',
+    reference    VARCHAR(120) DEFAULT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  _tablesReady = true;
+  console.log('[fees] tables ensured');
+}
+
+
 
 /** GET /api/fees/structure?level=&class=&term=&session= */
 exports.getStructure = async (req, res) => {
+  await ensureTables();
   try {
     const { level, class: cls, term, session } = req.query;
     let sql = 'SELECT * FROM fee_structure WHERE 1=1';
@@ -32,6 +88,7 @@ exports.getStructure = async (req, res) => {
 
 /** POST /api/fees/structure — create fee structure item */
 exports.addStructureItem = async (req, res) => {
+  await ensureTables();
   try {
     const { label, amount, level = 'All', class_name, term, session, mandatory = 1, description } = req.body ?? {};
     if (!label || amount == null) return fail(res, 400, 'label and amount are required.');
@@ -59,6 +116,7 @@ exports.addStructureItem = async (req, res) => {
 
 /** PUT /api/fees/structure/:id */
 exports.updateStructureItem = async (req, res) => {
+  await ensureTables();
   try {
     const row = await db.query1('SELECT * FROM fee_structure WHERE id=?', [req.params.id]);
     if (!row) return fail(res, 404, 'Fee structure item not found.');
@@ -80,6 +138,7 @@ exports.updateStructureItem = async (req, res) => {
 
 /** DELETE /api/fees/structure/:id */
 exports.deleteStructureItem = async (req, res) => {
+  await ensureTables();
   try {
     const row = await db.query1('SELECT id FROM fee_structure WHERE id=?', [req.params.id]);
     if (!row) return fail(res, 404, 'Fee structure item not found.');
@@ -92,6 +151,7 @@ exports.deleteStructureItem = async (req, res) => {
  *  Returns all fee items that apply to a specific class.
  *  Combines: items targeting the class directly + items for its level + items with no class filter */
 exports.getStructureForClass = async (req, res) => {
+  await ensureTables();
   try {
     const { class: cls, term, session } = req.query;
     if (!cls) return fail(res, 400, 'class is required.');
@@ -115,6 +175,7 @@ exports.getStructureForClass = async (req, res) => {
 
 /** POST /api/fees/structure/assign-class — bulk-assign a fee to an entire class */
 exports.assignFeeToClass = async (req, res) => {
+  await ensureTables();
   try {
     const { class_name, label, amount, term, session, mandatory = 1, description } = req.body ?? {};
     if (!class_name || !label || amount == null)
@@ -135,6 +196,7 @@ exports.assignFeeToClass = async (req, res) => {
 
 /** POST /api/fees/structure/assign-level — assign a fee to all classes of a level (Junior/Senior/All) */
 exports.assignFeeToLevel = async (req, res) => {
+  await ensureTables();
   try {
     const { level, label, amount, term, session, mandatory = 1, description } = req.body ?? {};
     if (!level || !label || amount == null)
@@ -156,6 +218,7 @@ exports.assignFeeToLevel = async (req, res) => {
 
 /** GET /api/fees?studentId=&class=&arm=&term=&session=&status=&feeType= */
 exports.getAll = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId, class: cls, arm, term, session, status, feeType, search } = req.query;
     let sql = `SELECT f.*, s.name AS student_name, c.name AS class_name, s.arm AS student_arm
@@ -182,6 +245,7 @@ exports.getAll = async (req, res) => {
 
 /** GET /api/fees/:id */
 exports.getOne = async (req, res) => {
+  await ensureTables();
   try {
     const row = await db.query1(
       `SELECT f.*, s.name AS student_name, c.name AS class_name, s.arm AS student_arm
@@ -194,6 +258,7 @@ exports.getOne = async (req, res) => {
 
 /** POST /api/fees — record a payment and add ledger entry */
 exports.create = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId, feeType, amount, date, term, session,
             status = 'Paid', reference, note } = req.body ?? {};
@@ -234,6 +299,7 @@ exports.create = async (req, res) => {
 
 /** POST /api/fees/bulk-charge — charge a fee to all students in a class/arm */
 exports.bulkCharge = async (req, res) => {
+  await ensureTables();
   try {
     const { class: cls, arm, feeType, amount, term, session, dueDate } = req.body ?? {};
     if (!cls || !feeType || !amount || !term)
@@ -279,6 +345,7 @@ exports.bulkCharge = async (req, res) => {
 
 /** PUT /api/fees/:id */
 exports.update = async (req, res) => {
+  await ensureTables();
   try {
     const row = await db.query1('SELECT * FROM fee_payments WHERE id=?', [req.params.id]);
     if (!row) return fail(res, 404, 'Payment not found.');
@@ -297,6 +364,7 @@ exports.update = async (req, res) => {
 
 /** PATCH /api/fees/:id/status */
 exports.updateStatus = async (req, res) => {
+  await ensureTables();
   try {
     const { status } = req.body ?? {};
     if (!['Paid','Partial','Unpaid','Waived','overdue'].includes(status))
@@ -322,6 +390,7 @@ exports.updateStatus = async (req, res) => {
 
 /** DELETE /api/fees/:id */
 exports.remove = async (req, res) => {
+  await ensureTables();
   try {
     const row = await db.query1('SELECT id FROM fee_payments WHERE id=?', [req.params.id]);
     if (!row) return fail(res, 404, 'Payment not found.');
@@ -337,6 +406,7 @@ exports.remove = async (req, res) => {
 
 /** GET /api/fees/ledger/:studentId — full lifetime ledger for one student */
 exports.getLedger = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     const { term, session, academic_year } = req.query;
@@ -373,6 +443,7 @@ exports.getLedger = async (req, res) => {
 
 /** GET /api/fees/ledger-summary — outstanding balances across all students */
 exports.getLedgerSummary = async (req, res) => {
+  await ensureTables();
   try {
     const { class: cls, arm, session } = req.query;
     let sql = `
@@ -401,6 +472,7 @@ exports.getLedgerSummary = async (req, res) => {
 
 /** POST /api/fees/ledger/adjustment — manual debit or credit adjustment */
 exports.addLedgerAdjustment = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId, type, amount, description, term, session, reference } = req.body ?? {};
     if (!studentId || !type || !amount || !description)
@@ -430,6 +502,7 @@ exports.addLedgerAdjustment = async (req, res) => {
 
 /** GET /api/fees/summary?term=&session=&class= */
 exports.getSummary = async (req, res) => {
+  await ensureTables();
   try {
     const { term, session, class: cls } = req.query;
     let sql = `SELECT f.fee_type,
@@ -458,6 +531,7 @@ exports.getSummary = async (req, res) => {
 
 /** GET /api/fees/student/:studentId — all payments + lifetime stats */
 exports.getByStudent = async (req, res) => {
+  await ensureTables();
   try {
     const { studentId } = req.params;
     const { term, session } = req.query;
@@ -476,6 +550,7 @@ exports.getByStudent = async (req, res) => {
 
 /** GET /api/fees/export/csv */
 exports.exportCSV = async (req, res) => {
+  await ensureTables();
   try {
     const { term, session, class: cls } = req.query;
     let sql = `SELECT f.*, s.name AS student_name, c.name AS class_name, s.arm
@@ -501,6 +576,7 @@ exports.exportCSV = async (req, res) => {
 
 /** GET /api/fees/ledger-export/:studentId — export student lifetime ledger as CSV */
 exports.exportLedgerCSV = async (req, res) => {
+  await ensureTables();
   try {
     const student = await db.query1('SELECT * FROM students WHERE id=?', [req.params.studentId]);
     if (!student) return fail(res, 404, 'Student not found.');
