@@ -284,6 +284,8 @@ exports.bulkCreate = async (req, res) => {
 /* ── PUT /api/students/:id  or  /:school/:id ────────────────────────────── */
 exports.update = async (req, res) => {
   try {
+    // Ensure parent_email column exists (added in schema v2)
+    await db.run("ALTER TABLE students ADD COLUMN IF NOT EXISTS parent_email VARCHAR(160) DEFAULT NULL").catch(()=>{});
     const id = resolveId(req);
     const row = await db.query1(
       `SELECT s.*, c.name AS class_name FROM students s

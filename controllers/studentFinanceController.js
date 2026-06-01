@@ -440,6 +440,48 @@ exports.recordPayment = async (req, res) => {
     const updated = await db.query1('SELECT * FROM fee_payments WHERE id=?', [chargeId]);
     const ledgerMeta = await getLedgerMeta(studentId);
 
+    // Send payment receipt email to parent (fire-and-forget)
+    setImmediate(async () => {
+      try {
+        const emailService = require('../services/emailService');
+        const parentEmail  = student.parent_email || null;
+        if (!parentEmail || !emailService.isEnabled()) return;
+        await emailService.sendEmail({
+          to:      parentEmail,
+          subject: `Payment Confirmation — ${student.name}`,
+          html: `
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+              <div style="background:#16a34a;color:#fff;padding:1.5rem;border-radius:10px 10px 0 0;">
+                <h2 style="margin:0;font-size:1.1rem;">Sacred Heart College Eziukwu Aba</h2>
+                <p style="margin:.3rem 0 0;font-size:.85rem;opacity:.9;">✅ Payment Confirmation</p>
+              </div>
+              <div style="background:#fff;border:1px solid #e5e7eb;padding:1.5rem;border-radius:0 0 10px 10px;">
+                <p>Dear Parent/Guardian of <strong>${student.name}</strong>,</p>
+                <p style="margin-top:.75rem;">We have received a payment for your child's account:</p>
+                <table style="width:100%;border-collapse:collapse;margin:1rem 0;font-size:.9rem;">
+                  <tr><td style="padding:.5rem;background:#f9fafb;font-weight:600;border:1px solid #e5e7eb;">Fee</td>
+                      <td style="padding:.5rem;border:1px solid #e5e7eb;">${charge.fee_type}</td></tr>
+                  <tr><td style="padding:.5rem;background:#f9fafb;font-weight:600;border:1px solid #e5e7eb;">Amount Paid</td>
+                      <td style="padding:.5rem;border:1px solid #e5e7eb;font-weight:700;color:#16a34a;">₦${amt.toLocaleString('en-NG',{minimumFractionDigits:2})}</td></tr>
+                  <tr><td style="padding:.5rem;background:#f9fafb;font-weight:600;border:1px solid #e5e7eb;">Method</td>
+                      <td style="padding:.5rem;border:1px solid #e5e7eb;">${method||'Cash'}</td></tr>
+                  <tr><td style="padding:.5rem;background:#f9fafb;font-weight:600;border:1px solid #e5e7eb;">Reference</td>
+                      <td style="padding:.5rem;border:1px solid #e5e7eb;">${reference||'—'}</td></tr>
+                  <tr><td style="padding:.5rem;background:#f9fafb;font-weight:600;border:1px solid #e5e7eb;">Status</td>
+                      <td style="padding:.5rem;border:1px solid #e5e7eb;"><span style="color:${status==='Paid'?'#16a34a':'#d97706'};font-weight:700;">${status}</span></td></tr>
+                  <tr><td style="padding:.5rem;background:#f9fafb;font-weight:600;border:1px solid #e5e7eb;">Outstanding Balance</td>
+                      <td style="padding:.5rem;border:1px solid #e5e7eb;font-weight:700;color:${ledgerMeta.balance>0?'#dc2626':'#16a34a'};">${ledgerMeta.balance>0?'₦'+ledgerMeta.balance.toLocaleString('en-NG',{minimumFractionDigits:2}):'✅ Fully Cleared'}</td></tr>
+                </table>
+                <p style="font-size:.85rem;color:#6b7280;">Please keep this as your payment notification. Visit the Parent Portal or contact the school for a formal receipt.</p>
+                <p style="margin-top:1rem;font-size:.8rem;color:#9ca3af;">This is an automated message from Sacred Heart College School Management System.</p>
+              </div>
+            </div>`,
+        });
+      } catch(emailErr) {
+        console.error('[finance] payment email failed:', emailErr.message);
+      }
+    });
+
     return ok(res, {
       payment:  updated,
       status,
@@ -510,6 +552,49 @@ exports.addCharge = async (req, res) => {
     );
 
     const saved = await db.query1('SELECT * FROM fee_payments WHERE id=?', [id]);
+
+    // Send email notification to parent (fire-and-forget)
+    setImmediate(async () => {
+      try {
+        const emailService = require('../services/emailService');
+        const parentEmail  = student.parent_email || null;
+        if (!parentEmail || !emailService.isEnabled()) return;
+
+        await emailService.sendEmail({
+          to:      parentEmail,
+          subject: `Fee Charge Notification — ${student.name}`,
+          html: `
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+              <div style="background:#1e3a5f;color:#fff;padding:1.5rem;border-radius:10px 10px 0 0;">
+                <h2 style="margin:0;font-size:1.1rem;">Sacred Heart College Eziukwu Aba</h2>
+                <p style="margin:.3rem 0 0;font-size:.85rem;opacity:.8;">Fee Charge Notification</p>
+              </div>
+              <div style="background:#fff;border:1px solid #e5e7eb;padding:1.5rem;border-radius:0 0 10px 10px;">
+                <p>Dear Parent/Guardian of <strong>${student.name}</strong>,</p>
+                <p style="margin-top:.75rem;">A new fee charge has been added to your child's account:</p>
+                <table style="width:100%;border-collapse:collapse;margin:1rem 0;font-size:.9rem;">
+                  <tr><td style="padding:.5rem;background:#f9fafb;font-weight:600;border:1px solid #e5e7eb;">Fee Type</td>
+                      <td style="padding:.5rem;border:1px solid #e5e7eb;">${feeType}</td></tr>
+                  <tr><td style="padding:.5rem;background:#f9fafb;font-weight:600;border:1px solid #e5e7eb;">Amount</td>
+                      <td style="padding:.5rem;border:1px solid #e5e7eb;font-weight:700;color:#dc2626;">₦${parseFloat(amount).toLocaleString('en-NG', {minimumFractionDigits:2})}</td></tr>
+                  <tr><td style="padding:.5rem;background:#f9fafb;font-weight:600;border:1px solid #e5e7eb;">Term</td>
+                      <td style="padding:.5rem;border:1px solid #e5e7eb;">${term}${session ? ' / ' + session : ''}</td></tr>
+                  <tr><td style="padding:.5rem;background:#f9fafb;font-weight:600;border:1px solid #e5e7eb;">Status</td>
+                      <td style="padding:.5rem;border:1px solid #e5e7eb;"><span style="color:#dc2626;font-weight:700;">Unpaid</span></td></tr>
+                  <tr><td style="padding:.5rem;background:#f9fafb;font-weight:600;border:1px solid #e5e7eb;">New Balance</td>
+                      <td style="padding:.5rem;border:1px solid #e5e7eb;font-weight:700;color:#dc2626;">₦${newBalance.toLocaleString('en-NG', {minimumFractionDigits:2})}</td></tr>
+                </table>
+                <p style="font-size:.85rem;color:#6b7280;">Please contact the school bursar to make payment. For queries, visit the Parent Portal or contact the school office.</p>
+                <p style="margin-top:1rem;font-size:.8rem;color:#9ca3af;">This is an automated message from Sacred Heart College School Management System.</p>
+              </div>
+            </div>`,
+        });
+        console.log(`[finance] charge notification sent to ${parentEmail} for ${student.name}`);
+      } catch(emailErr) {
+        console.error('[finance] email notification failed:', emailErr.message);
+      }
+    });
+
     return ok(res, saved, { newBalance }, 201);
   } catch (e) { return fail(res, 500, e.message); }
 };
@@ -646,4 +731,82 @@ exports.exportCSV = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="finance_${student.name.replace(/\s+/g,'_')}_${student.id.replace(/\//g,'-')}.csv"`);
     return res.send('\uFEFF' + lines.join('\n'));
   } catch (e) { return fail(res, 500, e.message); }
+};
+/* ════════════════════════════════════════════════════════════════
+   POST /api/student-finance/pay-all
+   Record a bulk payment that clears all outstanding charges.
+   Body: { amount, date, method, reference }
+════════════════════════════════════════════════════════════════ */
+exports.payAll = async (req, res) => {
+  await ensureTables();
+  try {
+    const { studentId } = req.params;
+    const { amount, date, method = 'Cash', reference } = req.body ?? {};
+    if (!amount || !date) return fail(res, 400, 'amount and date are required.');
+
+    const unpaid = await db.query(
+      `SELECT * FROM fee_payments WHERE student_id=? AND status IN ('Unpaid','Partial') ORDER BY id`,
+      [studentId]
+    );
+    if (!unpaid.length) return ok(res, { cleared: 0, message: 'No outstanding charges.' });
+
+    let remaining = parseFloat(amount);
+    let cleared   = 0;
+    const lastBal = await db.query1(
+      'SELECT balance FROM fee_ledger WHERE student_id=? ORDER BY id DESC LIMIT 1', [studentId]
+    );
+    let runBalance = lastBal ? parseFloat(lastBal.balance) : 0;
+
+    for (const charge of unpaid) {
+      if (remaining <= 0) break;
+      const due    = parseFloat(charge.amount);
+      const paying = Math.min(due, remaining);
+      const status = paying >= due ? 'Paid' : 'Partial';
+      remaining   -= paying;
+      runBalance  -= paying;
+      await db.run(
+        `UPDATE fee_payments SET status=?, payment_date=?, reference=? WHERE id=?`,
+        [status, date, reference || null, charge.id]
+      );
+      await db.run(
+        `INSERT INTO fee_ledger (student_id, payment_id, entry_type, description, debit, credit, balance, term, session, reference, created_by)
+         VALUES (?,?,?,?,0,?,?,?,?,?,?)`,
+        [studentId, charge.id, 'payment',
+         `${charge.fee_type} — bulk payment via ${method}`,
+         paying, runBalance, charge.term, charge.session, reference || null, req.user?.name || null]
+      );
+      cleared++;
+    }
+    return ok(res, { cleared, remaining, newBalance: runBalance });
+  } catch(e) { return fail(res, 500, e.message); }
+};
+
+/* ════════════════════════════════════════════════════════════════
+   GET /api/student-finance/class-summary?class=&arm=
+   Summary of all students in a class for class finance view.
+════════════════════════════════════════════════════════════════ */
+exports.getClassSummary = async (req, res) => {
+  await ensureTables();
+  try {
+    const { class: cls, arm } = req.query;
+    if (!cls) return fail(res, 400, 'class query param is required.');
+    let sql  = `SELECT s.id, s.name, s.arm, c.name AS class_name
+                FROM students s LEFT JOIN classes c ON c.id=s.class_id
+                WHERE c.name=? AND COALESCE(s.active,1)=1`;
+    const p  = [cls];
+    if (arm) { sql += ' AND s.arm=?'; p.push(arm); }
+    sql += ' ORDER BY s.arm, s.name';
+    const students = await db.query(sql, p);
+
+    const result = await Promise.all(students.map(async s => {
+      const meta = await db.query1(
+        `SELECT COALESCE(SUM(debit),0) AS charged, COALESCE(SUM(credit),0) AS paid
+         FROM fee_ledger WHERE student_id=?`, [s.id]
+      ).catch(() => ({ charged: 0, paid: 0 }));
+      const charged = parseFloat(meta?.charged || 0);
+      const paid    = parseFloat(meta?.paid    || 0);
+      return { ...s, totalCharged: charged, totalPaid: paid, balance: charged - paid };
+    }));
+    return ok(res, result, { count: result.length });
+  } catch(e) { return fail(res, 500, e.message); }
 };

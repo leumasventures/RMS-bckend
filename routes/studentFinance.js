@@ -20,22 +20,27 @@ router.options('*', (_req, res) => res.sendStatus(204));
    Only summary, charges, levies, attendance, results exposed.
 ─────────────────────────────────────────────────────────────────────────── */
 async function parentPhoneAuth(req, res, next) {
-  const db       = require('../config/db');
+  const db      = require('../config/db');
   const { sid, phone } = req.query;
-  if (!sid || !phone) return res.status(400).json({ success: false, message: 'sid and phone required.' });
+  if (!sid || !phone)
+    return res.status(400).json({ success: false, message: 'sid and phone required.' });
 
-  const student = db.findStudent(sid);
-  if (!student) return res.status(404).json({ success: false, message: 'Student not found.' });
+  // Query DB directly so new SAHARCO IDs are always found
+  const student = await db.query1(
+    'SELECT * FROM students WHERE id = ?', [decodeURIComponent(sid)]
+  ).catch(() => null);
+
+  if (!student)
+    return res.status(404).json({ success: false, message: 'Student not found.' });
 
   const stored  = (student.phone || student.parent_phone || '').replace(/\s/g,'').replace(/^(\+234|234)/, '0');
-  const entered = phone.replace(/\s/g,'').replace(/^(\+234|234)/, '0');
+  const entered = decodeURIComponent(phone).replace(/\s/g,'').replace(/^(\+234|234)/, '0');
 
-  if (!stored || entered.slice(-8) !== stored.slice(-8)) {
+  if (!stored || entered.slice(-8) !== stored.slice(-8))
     return res.status(403).json({ success: false, message: 'Phone number does not match.' });
-  }
 
-  req.params.studentId = sid;
-  req.user = { role: 'Parent', ward_id: sid, wardId: sid, name: student.name };
+  req.params.studentId = student.id;
+  req.user = { role: 'Parent', ward_id: student.id, wardId: student.id, name: student.name };
   next();
 }
 
@@ -93,7 +98,9 @@ router.get('/receipt/:paymentId', anyAllowed, sid, guardParentAccess, sfc.getRec
    Only Admin + Bursar can write. Parents and Teachers cannot.
 ─────────────────────────────────────────────────────────────────── */
 router.post('/pay',        adminBursar, sid, sfc.recordPayment);
+router.post('/pay-all',    adminBursar, sid, sfc.payAll);
 router.post('/charge',     adminBursar, sid, sfc.addCharge);
 router.post('/adjustment', adminOnly,   sid, sfc.addAdjustment);
+router.get('/class-summary', anyAllowed, sfc.getClassSummary);
 
 module.exports = router;
