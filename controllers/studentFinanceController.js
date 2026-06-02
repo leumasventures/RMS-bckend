@@ -161,12 +161,6 @@ exports.getSummary = async (req, res) => {
       ),
     ]);
 
-    const school = await db.query1(
-      `SELECT setting_key, setting_value FROM school_settings
-       WHERE setting_key IN ('school_name','current_session','current_term','principal_name')`,
-      []
-    ).catch(() => null);
-
     // Fetch all settings at once
     const settings = {};
     const sRows = await db.query(
@@ -218,10 +212,8 @@ exports.getCharges = async (req, res) => {
     if (!canAccess(req.user, studentId)) return fail(res, 403, 'Access denied.');
 
     const { term, session, status } = req.query;
-    let sql = `SELECT f.*, c.name AS class_name, s.arm AS student_arm
+    let sql = `SELECT f.*
                FROM fee_payments f
-               JOIN students s ON s.id = f.student_id
-               LEFT JOIN classes c ON c.id = s.class_id
                WHERE f.student_id = ?`;
     const p = [studentId];
     if (term)    { sql += ' AND f.term = ?';    p.push(term); }
@@ -250,10 +242,8 @@ exports.getPayments = async (req, res) => {
     if (!canAccess(req.user, studentId)) return fail(res, 403, 'Access denied.');
 
     const { term, session } = req.query;
-    let sql = `SELECT f.*, c.name AS class_name
+    let sql = `SELECT f.*
                FROM fee_payments f
-               JOIN students s ON s.id = f.student_id
-               LEFT JOIN classes c ON c.id = s.class_id
                WHERE f.student_id = ? AND f.status IN ('Paid','Partial','Waived')`;
     const p = [studentId];
     if (term)    { sql += ' AND f.term = ?';    p.push(term); }
@@ -275,16 +265,30 @@ exports.getLevies = async (req, res) => {
     const { studentId } = req.params;
     if (!canAccess(req.user, studentId)) return fail(res, 403, 'Access denied.');
 
-    const rows = await db.query(
-      `SELECT lp.*,
-              l.name AS levy_name, l.category, l.due_date,
-              l.description AS levy_description, l.amount AS levy_amount
-       FROM levy_payments lp
-       JOIN levies l ON l.id = lp.levy_id
-       WHERE lp.student_id = ?
-       ORDER BY lp.created_at DESC`,
-      [studentId]
-    );
+    // levy_payments may have levy_id (FK to levies) or stand-alone levy_name
+    let rows = [];
+    try {
+      rows = await db.query(
+        `SELECT lp.*,
+                COALESCE(l.name, lp.levy_name) AS levy_name,
+                COALESCE(l.category, lp.category) AS category,
+                COALESCE(l.due_date, lp.due_date) AS due_date,
+                l.description AS levy_description,
+                l.amount AS levy_amount
+         FROM levy_payments lp
+         LEFT JOIN levies l ON l.id = lp.levy_id
+         WHERE lp.student_id = ?
+         ORDER BY lp.created_at DESC`,
+        [studentId]
+      );
+    } catch(e) {
+      // Fallback if levies table doesn't exist or levy_id column missing
+      rows = await db.query(
+        `SELECT *, levy_name, category, due_date FROM levy_payments
+         WHERE student_id = ? ORDER BY created_at DESC`,
+        [studentId]
+      ).catch(() => []);
+    }
     const unpaid = rows.filter(r => r.status === 'Unpaid');
     return ok(res, rows, {
       count:         rows.length,
@@ -347,8 +351,10 @@ exports.getStatement = async (req, res) => {
 
     const [charges, levies, ledger, settings] = await Promise.all([
       db.query(`SELECT * FROM fee_payments WHERE student_id = ?${feeFilter} ORDER BY payment_date DESC`, feeParams),
-      db.query(`SELECT lp.*, l.name AS levy_name, l.category, l.due_date
-                FROM levy_payments lp JOIN levies l ON l.id=lp.levy_id
+      db.query(`SELECT lp.*, COALESCE(l.name, lp.levy_name) AS levy_name,
+                       COALESCE(l.category, lp.category) AS category,
+                       COALESCE(l.due_date, lp.due_date) AS due_date
+                FROM levy_payments lp LEFT JOIN levies l ON l.id=lp.levy_id
                 WHERE lp.student_id = ? ORDER BY lp.created_at DESC`, [studentId]),
       db.query(`SELECT * FROM fee_ledger WHERE student_id = ?${feeFilter} ORDER BY created_at ASC`, feeParams),
       db.query(`SELECT setting_key, setting_value FROM school_settings
@@ -397,7 +403,7 @@ exports.recordPayment = async (req, res) => {
   await ensureTables();
   try {
     const { studentId } = req.params;
-    if (req.user.role !== 'Admin' && req.user.role !== 'Teacher' && req.user.role !== 'Bursar')
+    if (req.user.role !== 'Admin' && req.user.role !== 'Bursar')
       return fail(res, 403, 'Only Admin, Teacher or Bursar can record payments.');
 
     const { chargeId, amountPaid, date, method, reference, note } = req.body ?? {};
@@ -512,7 +518,7 @@ exports.addCharge = async (req, res) => {
   await ensureTables();
   try {
     const { studentId } = req.params;
-    if (req.user.role !== 'Admin' && req.user.role !== 'Teacher' && req.user.role !== 'Bursar')
+    if (req.user.role !== 'Admin' && req.user.role !== 'Bursar')
       return fail(res, 403, 'Only Admin, Teacher or Bursar can add charges.');
 
     const { feeType, amount, date, term, session, reference, note } = req.body ?? {};
