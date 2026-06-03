@@ -454,3 +454,109 @@ exports.reviewSignupRequest = async (req, res) => {
     });
   } catch (e) { return fail(res, 500, e.message); }
 };
+/* ═══════════════════════════════════════════════════════════════════
+   POST /api/auth/parent-register  — PUBLIC (no token required)
+   Parent self-registration: verifies student ID + phone, then creates
+   a Parent user account with ward_id linked to the student.
+   Body: { studentId, phone, name, email, password, relationship }
+═══════════════════════════════════════════════════════════════════ */
+exports.parentRegister = async (req, res) => {
+  try {
+    const { studentId, phone, name, email, password, relationship } = req.body ?? {};
+
+    // ── Validate inputs ───────────────────────────────────────────
+    if (!studentId) return fail(res, 400, 'studentId is required.');
+    if (!phone)     return fail(res, 400, 'phone is required.');
+    if (!name)      return fail(res, 400, 'name is required.');
+    if (!email)     return fail(res, 400, 'email is required.');
+    if (!password)  return fail(res, 400, 'password is required.');
+    if (password.length < 6) return fail(res, 400, 'Password must be at least 6 characters.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      return fail(res, 400, 'Invalid email address.');
+
+    // ── Verify student exists ─────────────────────────────────────
+    const student = await db.query1(
+      'SELECT * FROM students WHERE id = ?',
+      [decodeURIComponent(studentId)]
+    );
+    if (!student) return fail(res, 404, 'Student not found. Please check the Admission Number.');
+
+    // ── Verify phone matches ───────────────────────────────────────
+    const stored  = (student.phone || student.parent_phone || '')
+      .replace(/\s/g, '').replace(/^(\+234|234)/, '0');
+    const entered = String(phone).replace(/\s/g, '').replace(/^(\+234|234)/, '0');
+
+    if (!stored || entered.slice(-8) !== stored.slice(-8))
+      return fail(res, 403, 'Phone number does not match our records. Please contact the school admin office.');
+
+    // ── Check email not already in use ────────────────────────────
+    const existing = await db.query1(
+      'SELECT id FROM users WHERE email = ?',
+      [email.toLowerCase().trim()]
+    );
+    if (existing) return fail(res, 409, 'This email address is already registered. Try logging in, or use a different email.');
+
+    // ── Check student doesn't already have a linked parent account ─
+    const existingParent = await db.query1(
+      "SELECT id, email FROM users WHERE ward_id = ? AND role = 'Parent'",
+      [student.id]
+    );
+    if (existingParent)
+      return fail(res, 409,
+        `A parent account already exists for this student (${existingParent.email}). ` +
+        'If you have forgotten your password, use "Forgot Password" on the login page, or contact the admin.'
+      );
+
+    // ── Create the user account ───────────────────────────────────
+    // Ensure note column exists
+    await db.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS note TEXT DEFAULT NULL").catch(() => {});
+
+    const hash = await bcrypt.hash(password, 10);
+    const result = await db.run(
+      `INSERT INTO users (name, email, role, password_hash, ward_id, note, active)
+       VALUES (?, ?, 'Parent', ?, ?, ?, 1)`,
+      [
+        String(name).trim(),
+        email.toLowerCase().trim(),
+        hash,
+        student.id,
+        relationship ? `${relationship} of ${student.name}` : `Parent of ${student.name}`,
+      ]
+    );
+
+    // ── Update student parent_email if not already set ────────────
+    if (!student.parent_email && email) {
+      await db.run(
+        'ALTER TABLE students ADD COLUMN IF NOT EXISTS parent_email VARCHAR(160) DEFAULT NULL'
+      ).catch(() => {});
+      await db.run(
+        'UPDATE students SET parent_email = ? WHERE id = ? AND (parent_email IS NULL OR parent_email = "")',
+        [email.toLowerCase().trim(), student.id]
+      ).catch(() => {});
+    }
+
+    // ── Sync in-memory cache ──────────────────────────────────────
+    const saved = await db.query1(
+      `SELECT id, name, email, role, ward_id, active, created_at FROM users WHERE id = ?`,
+      [result.insertId]
+    );
+    if (db.users) db.users.push({ ...saved, active: true });
+
+    return res.status(201).json({
+      success: true,
+      message: `Account created successfully for ${name}. You can now log in.`,
+      data: {
+        id:       saved.id,
+        name:     saved.name,
+        email:    saved.email,
+        role:     'Parent',
+        ward_id:  student.id,
+        student:  { id: student.id, name: student.name, class: student.class_name || student.class || '', arm: student.arm || '' },
+      },
+    });
+
+  } catch (e) {
+    console.error('[parentRegister]', e.message);
+    return fail(res, 500, e.message);
+  }
+};

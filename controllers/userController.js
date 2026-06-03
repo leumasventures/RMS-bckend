@@ -61,7 +61,7 @@ exports.getOne = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     const { name, email, role, password, staff_id, student_id,
-            assigned_class, assigned_arm, ward_id } = req.body ?? {};
+            assigned_class, assigned_arm, ward_id, note } = req.body ?? {};
 
     if (!name)     return fail(res, 400, 'name is required.');
     if (!email)    return fail(res, 400, 'email is required.');
@@ -74,18 +74,20 @@ exports.create = async (req, res) => {
     if (existing) return fail(res, 409, 'Email already in use.');
 
     const hash = await bcrypt.hash(password, SALT_ROUNDS);
+    // Ensure note column exists (added for parent registration)
+    await db.run("ALTER TABLE users ADD COLUMN IF NOT EXISTS note TEXT DEFAULT NULL").catch(()=>{});
     const result = await db.run(
       `INSERT INTO users (name, email, role, password_hash, staff_id, student_id,
-       assigned_class, assigned_arm, ward_id, active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+       assigned_class, assigned_arm, ward_id, note, active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [String(name).trim(), email.toLowerCase().trim(), role, hash,
        staff_id || null, student_id || null,
-       assigned_class || null, assigned_arm || null, ward_id || null]
+       assigned_class || null, assigned_arm || null, ward_id || null, note || null]
     );
 
     const saved = await db.query1(
       `SELECT id, staff_id, student_id, name, email, role,
-       assigned_class, assigned_arm, ward_id, active, created_at
+       assigned_class, assigned_arm, ward_id, note, active, created_at
        FROM users WHERE id=?`, [result.insertId]);
 
     // Sync in-memory cache
@@ -108,18 +110,24 @@ exports.update = async (req, res) => {
         return fail(res, 400, 'Cannot change role: this is the only active Admin account.');
     }
 
-    const fields = ['name','email','role','staff_id','student_id','assigned_class','assigned_arm','ward_id'];
+    const fields = ['name','email','role','staff_id','student_id','assigned_class','assigned_arm','ward_id','note'];
     const sets = [], vals = [];
     fields.forEach(f => {
       if (req.body[f] !== undefined) {
-        if (f === 'role' && !VALID_ROLES.includes(req.body[f]))
-          return; // skip invalid role silently — checked below
+        if (f === 'role' && !VALID_ROLES.includes(req.body[f])) return;
         sets.push(`${f}=?`);
-        vals.push(f === 'email' ? req.body[f].toLowerCase().trim() : req.body[f]);
+        vals.push(f === 'email' ? req.body[f].toLowerCase().trim() : (req.body[f] === '' ? null : req.body[f]));
       }
     });
     if (req.body.role && !VALID_ROLES.includes(req.body.role))
       return fail(res, 400, `role must be one of: ${VALID_ROLES.join(', ')}.`);
+
+    // Allow password reset via update
+    if (req.body.password) {
+      if (req.body.password.length < 6) return fail(res, 400, 'Password must be at least 6 characters.');
+      const hash = await bcrypt.hash(req.body.password, SALT_ROUNDS);
+      sets.push('password_hash=?'); vals.push(hash);
+    }
 
     if (!sets.length) return fail(res, 400, 'No valid fields to update.');
     vals.push(req.params.id);
