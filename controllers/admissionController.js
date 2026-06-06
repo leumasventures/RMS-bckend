@@ -613,9 +613,12 @@ exports.enroll = async (req, res) => {
     const arm = req.body.arm           || row.assigned_arm   || row.preferred_arm;
     if (!cls || !arm) return fail(res, 400, 'Class and arm are required.');
 
-    const clsObj = db.findClass(cls);
-    if (!clsObj) return fail(res, 400, `Class "${cls}" does not exist.`);
-
+    // With this:
+    const clsObj = db.findClass(cls) 
+      || db.findClass(cls.replace('SS','S').trim())   // "SS 3" → "S 3"
+      || db.findClass(cls.replace('JSS','JS').trim())  // "JSS 1" → "JS 1"
+      || { id: cls, name: cls };                       // fallback: use as-is
+    
     const studentId = await generateStudentId();
 
     const fullName = [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(' ');
