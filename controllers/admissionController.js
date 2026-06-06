@@ -239,7 +239,7 @@ function normaliseRow(a) {
     guardian_addr:    a.guardian_addr || '',
     relation:         a.relation      || '',
     status:           a.status        || 'Pending',
-    appliedAt:        a.applied_at || (a.created_at ? String(a.created_at).slice(0, 10) : ''),
+    appliedAt: (a.created_at && String(a.created_at).slice(0, 10) !== '0000-00-00') ? String(a.created_at).slice(0, 10) : '',
     notes:            a.notes         || '',
     adm_no:           appNo,
     assignedClass:    a.assigned_class || cls,
