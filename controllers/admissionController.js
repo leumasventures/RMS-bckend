@@ -18,32 +18,37 @@ const ok = (res, data, meta = {}, status = 200) =>
 /* ── Ensure table exists ────────────────────────────────────────────────── */
 const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS admissions (
-    id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    first_name     VARCHAR(60)  NOT NULL,
-    last_name      VARCHAR(60)  NOT NULL,
-    middle_name    VARCHAR(60),
-    gender         VARCHAR(10),
-    dob            DATE,
-    blood_group    VARCHAR(5),
-    genotype       VARCHAR(5),
-    state_origin   VARCHAR(60),
-    lga            VARCHAR(60),
-    address        TEXT,
-    class_apply    VARCHAR(60),
-    preferred_arm  VARCHAR(10),
-    acad_session   VARCHAR(20),
-    entry_term     VARCHAR(30),
-    prev_school    VARCHAR(120),
-    last_class     VARCHAR(60),
-    guardian_name  VARCHAR(120),
-    guardian_phone VARCHAR(20),
-    guardian_email VARCHAR(160),
-    guardian_addr  TEXT,
-    relation       VARCHAR(40),
-    status         VARCHAR(20)  NOT NULL DEFAULT 'Pending',
-    notes          TEXT,
-    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    id                  INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    application_no      VARCHAR(30),
+    first_name          VARCHAR(60)  NOT NULL,
+    last_name           VARCHAR(60)  NOT NULL,
+    middle_name         VARCHAR(60),
+    gender              VARCHAR(10),
+    dob                 DATE,
+    blood_group         VARCHAR(5),
+    genotype            VARCHAR(5),
+    state_origin        VARCHAR(60),
+    lga                 VARCHAR(60),
+    address             TEXT,
+    class_apply         VARCHAR(60),
+    preferred_arm       VARCHAR(10),
+    acad_session        VARCHAR(20),
+    entry_term          VARCHAR(30),
+    prev_school         VARCHAR(120),
+    last_class          VARCHAR(60),
+    guardian_name       VARCHAR(120),
+    guardian_phone      VARCHAR(20),
+    guardian_email      VARCHAR(160),
+    guardian_addr       TEXT,
+    relation            VARCHAR(40),
+    assigned_class      VARCHAR(60),
+    assigned_arm        VARCHAR(10),
+    assigned_student_id VARCHAR(40),
+    admitted_at         DATE,
+    status              VARCHAR(20)  NOT NULL DEFAULT 'Pending',
+    notes               TEXT,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
 
 let _tableReady = false;
@@ -128,7 +133,7 @@ exports.getAll = async (req, res) => {
     let sql = 'SELECT * FROM admissions WHERE 1=1';
     const params = [];
     if (status)           { sql += ' AND status=?';       params.push(status); }
-    if (session)          { sql += ' AND session=?'; params.push(session); }
+    if (session)          { sql += ' AND acad_session=?'; params.push(session); }
     if (applyingForClass) { sql += ' AND class_apply=?'; params.push(applyingForClass); }
     if (search) {
       sql += ' AND (first_name LIKE ? OR last_name LIKE ? OR guardian_name LIKE ? OR guardian_phone LIKE ?)';
@@ -171,7 +176,7 @@ exports.getStats = async (req, res) => {
       SUM(status='Draft')    AS draft
       FROM admissions`;
     const params = [];
-    if (session) { sql += ' WHERE session=?'; params.push(session); }
+    if (session) { sql += ' WHERE acad_session=?'; params.push(session); }
     const row = await db.query1(sql, params);
     return res.json({ success: true, data: {
       total:    Number(row?.total)    || 0,
@@ -542,13 +547,13 @@ exports.exportAdmissions = async (req, res) => {
     let sql = 'SELECT * FROM admissions WHERE 1=1';
     const params = [];
     if (status)  { sql += ' AND status=?';    params.push(status); }
-    if (session) { sql += ' AND session=?';    params.push(session); }
+    if (session) { sql += ' AND acad_session=?'; params.push(session); }
     sql += ' ORDER BY created_at DESC';
     const rows  = await db.query(sql, params);
     const hd    = ['ID','First','Last','Gender','DOB','Class','Arm','Session','Guardian','Phone','Email','Status','Applied'];
     const lines = [hd, ...rows.map(a => [
       a.id, a.first_name, a.last_name, a.gender, a.dob,
-      a.applying_for_class||'', a.preferred_arm||'', a.session||'',
+      a.class_apply||'', a.preferred_arm||'', a.acad_session||'',
       a.parent_name||'', a.parent_phone||'', a.parent_email||'',
       a.status, String(a.created_at||'').slice(0,10),
     ])].map(r => r.map(c => `"${String(c??'').replace(/"/g,'""')}"`).join(',')).join('\r\n');

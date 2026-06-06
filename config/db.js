@@ -140,16 +140,24 @@ const db = {
       updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(e => console.warn('[db] admissions table:', e.message));
 
-    // Add missing columns to existing tables (safe on re-run — errors are suppressed)
-    const admColsToAdd = [
-      "ALTER TABLE admissions ADD COLUMN IF NOT EXISTS application_no VARCHAR(30) AFTER id",
-      "ALTER TABLE admissions ADD COLUMN IF NOT EXISTS assigned_class VARCHAR(60) AFTER relation",
-      "ALTER TABLE admissions ADD COLUMN IF NOT EXISTS assigned_arm VARCHAR(10) AFTER assigned_class",
-      "ALTER TABLE admissions ADD COLUMN IF NOT EXISTS assigned_student_id VARCHAR(40) AFTER assigned_arm",
-      "ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admitted_at DATE AFTER assigned_student_id",
+    // Add missing columns to existing table — MySQL 5.7-compatible (no IF NOT EXISTS)
+    // Each runs only if the column is absent; errors are suppressed safely.
+    const _existingCols = await q(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'admissions'`
+    ).catch(() => []);
+    const _colNames = new Set(_existingCols.map(r => r.COLUMN_NAME));
+    const _colsToAdd = [
+      { name: 'application_no',      sql: 'ALTER TABLE admissions ADD COLUMN application_no VARCHAR(30) AFTER id' },
+      { name: 'assigned_class',      sql: 'ALTER TABLE admissions ADD COLUMN assigned_class VARCHAR(60) AFTER relation' },
+      { name: 'assigned_arm',        sql: 'ALTER TABLE admissions ADD COLUMN assigned_arm VARCHAR(10) AFTER assigned_class' },
+      { name: 'assigned_student_id', sql: 'ALTER TABLE admissions ADD COLUMN assigned_student_id VARCHAR(40) AFTER assigned_arm' },
+      { name: 'admitted_at',         sql: 'ALTER TABLE admissions ADD COLUMN admitted_at DATE AFTER assigned_student_id' },
     ];
-    for (const sql of admColsToAdd) {
-      await q(sql).catch(() => {}); // ignore if already exists
+    for (const col of _colsToAdd) {
+      if (!_colNames.has(col.name)) {
+        await q(col.sql).catch(e => console.warn(`[db] add column ${col.name}:`, e.message));
+      }
     }
 
     await q(`CREATE TABLE IF NOT EXISTS signup_requests (
