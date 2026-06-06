@@ -55,11 +55,38 @@ let _tableReady = false;
 async function ensureTable() {
   if (_tableReady) return;
   try {
+    // Step 1: create table if it doesn't exist yet
     await db.run(CREATE_TABLE_SQL);
+    console.log('[admissions] table created or already exists');
+
+    // Step 2: check which columns are actually present (MySQL 5.7 safe)
+    const existingCols = await db.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'admissions'`
+    );
+    const have = new Set(existingCols.map(r => r.COLUMN_NAME));
+    console.log('[admissions] existing columns:', [...have].join(', '));
+
+    // Step 3: add any columns that are missing (no IF NOT EXISTS — MySQL 5.7 compat)
+    const needed = [
+      { name: 'application_no',      ddl: 'ALTER TABLE admissions ADD COLUMN application_no VARCHAR(30)' },
+      { name: 'assigned_class',      ddl: 'ALTER TABLE admissions ADD COLUMN assigned_class VARCHAR(60)' },
+      { name: 'assigned_arm',        ddl: 'ALTER TABLE admissions ADD COLUMN assigned_arm VARCHAR(10)' },
+      { name: 'assigned_student_id', ddl: 'ALTER TABLE admissions ADD COLUMN assigned_student_id VARCHAR(40)' },
+      { name: 'admitted_at',         ddl: 'ALTER TABLE admissions ADD COLUMN admitted_at DATE' },
+    ];
+    for (const col of needed) {
+      if (!have.has(col.name)) {
+        await db.run(col.ddl);
+        console.log(`[admissions] added missing column: ${col.name}`);
+      }
+    }
+
     _tableReady = true;
     console.log('[admissions] table ready');
   } catch (e) {
-    console.error('[admissions] ensureTable error:', e.message);
+    console.error('[admissions] ensureTable FAILED:', e.message, '| code:', e.code);
+    // Don't set _tableReady — next request will retry
   }
 }
 
