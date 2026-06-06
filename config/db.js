@@ -107,33 +107,50 @@ const db = {
     // Ensure critical tables exist (created by migrate.js but may be missing on first deploy)
 
     await q(`CREATE TABLE IF NOT EXISTS admissions (
-      id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-      first_name      VARCHAR(60)  NOT NULL,
-      last_name       VARCHAR(60)  NOT NULL,
-      middle_name     VARCHAR(60),
-      gender          VARCHAR(10),
-      dob             DATE,
-      blood_group     VARCHAR(5),
-      genotype        VARCHAR(5),
-      state_origin    VARCHAR(60),
-      lga             VARCHAR(60),
-      address         TEXT,
-      class_apply     VARCHAR(60),
-      preferred_arm   VARCHAR(10),
-      acad_session    VARCHAR(20),
-      entry_term      VARCHAR(30),
-      prev_school     VARCHAR(120),
-      last_class      VARCHAR(60),
-      guardian_name   VARCHAR(120),
-      guardian_phone  VARCHAR(20),
-      guardian_email  VARCHAR(160),
-      guardian_addr   TEXT,
-      relation        VARCHAR(40),
-      status          ENUM('Draft','Pending','Approved','Enrolled','Rejected') DEFAULT 'Pending',
-      notes           TEXT,
-      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      id                  INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      application_no      VARCHAR(30),
+      first_name          VARCHAR(60)  NOT NULL,
+      last_name           VARCHAR(60)  NOT NULL,
+      middle_name         VARCHAR(60),
+      gender              VARCHAR(10),
+      dob                 DATE,
+      blood_group         VARCHAR(5),
+      genotype            VARCHAR(5),
+      state_origin        VARCHAR(60),
+      lga                 VARCHAR(60),
+      address             TEXT,
+      class_apply         VARCHAR(60),
+      preferred_arm       VARCHAR(10),
+      acad_session        VARCHAR(20),
+      entry_term          VARCHAR(30),
+      prev_school         VARCHAR(120),
+      last_class          VARCHAR(60),
+      guardian_name       VARCHAR(120),
+      guardian_phone      VARCHAR(20),
+      guardian_email      VARCHAR(160),
+      guardian_addr       TEXT,
+      relation            VARCHAR(40),
+      assigned_class      VARCHAR(60),
+      assigned_arm        VARCHAR(10),
+      assigned_student_id VARCHAR(40),
+      admitted_at         DATE,
+      status              ENUM('Draft','Pending','Approved','Enrolled','Rejected') DEFAULT 'Pending',
+      notes               TEXT,
+      created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(e => console.warn('[db] admissions table:', e.message));
+
+    // Add missing columns to existing tables (safe on re-run — errors are suppressed)
+    const admColsToAdd = [
+      "ALTER TABLE admissions ADD COLUMN IF NOT EXISTS application_no VARCHAR(30) AFTER id",
+      "ALTER TABLE admissions ADD COLUMN IF NOT EXISTS assigned_class VARCHAR(60) AFTER relation",
+      "ALTER TABLE admissions ADD COLUMN IF NOT EXISTS assigned_arm VARCHAR(10) AFTER assigned_class",
+      "ALTER TABLE admissions ADD COLUMN IF NOT EXISTS assigned_student_id VARCHAR(40) AFTER assigned_arm",
+      "ALTER TABLE admissions ADD COLUMN IF NOT EXISTS admitted_at DATE AFTER assigned_student_id",
+    ];
+    for (const sql of admColsToAdd) {
+      await q(sql).catch(() => {}); // ignore if already exists
+    }
 
     await q(`CREATE TABLE IF NOT EXISTS signup_requests (
       id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

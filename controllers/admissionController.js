@@ -129,9 +129,9 @@ exports.getAll = async (req, res) => {
     const params = [];
     if (status)           { sql += ' AND status=?';       params.push(status); }
     if (session)          { sql += ' AND session=?'; params.push(session); }
-    if (applyingForClass) { sql += ' AND applying_for_class=?'; params.push(applyingForClass); }
+    if (applyingForClass) { sql += ' AND class_apply=?'; params.push(applyingForClass); }
     if (search) {
-      sql += ' AND (first_name LIKE ? OR last_name LIKE ? OR parent_name LIKE ? OR parent_phone LIKE ?)';
+      sql += ' AND (first_name LIKE ? OR last_name LIKE ? OR guardian_name LIKE ? OR guardian_phone LIKE ?)';
       const like = `%${search}%`;
       params.push(like, like, like, like);
     }
@@ -238,24 +238,17 @@ exports.create = async (req, res) => {
     const dobVal = (dob && String(dob).match(/^\d{4}-\d{2}-\d{2}$/)) ? dob : null;
     if (!dobVal) console.warn('[admissions/create] Invalid dob value:', dob);
 
-    // Generate unique application number: ADM/YY/NNNN
-    const year2d  = new Date().getFullYear().toString().slice(-2);
-    const countRow = await db.query1('SELECT COUNT(*) AS n FROM admissions');
-    const seqNum   = String((Number(countRow?.n) || 0) + 1).padStart(4, '0');
-    const appNo    = `ADM/${year2d}/${seqNum}`;
-
     const result = await db.run(
       `INSERT INTO admissions
-         (application_no, first_name, last_name, middle_name, gender, dob,
+         (first_name, last_name, middle_name, gender, dob,
           blood_group, genotype, state_origin, lga, address,
-          applying_for_class, preferred_arm, session, entry_term,
+          class_apply, preferred_arm, acad_session, entry_term,
           prev_school, last_class,
-          parent_name, guardian_first, guardian_last,
-          parent_phone, parent_email, guardian_addr, relation,
-          status, notes, applied_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Pending',?,CURDATE())`,
+          guardian_name,
+          guardian_phone, guardian_email, guardian_addr, relation,
+          status, notes)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'Pending',?)`,
       [
-        appNo,
         String(first_name).trim(),
         String(last_name).trim(),
         middle_name    || null,
@@ -273,8 +266,6 @@ exports.create = async (req, res) => {
         prev_school    || null,
         last_class     || null,
         gName,
-        guardian_first || null,
-        guardian_last  || null,
         String(guardian_phone).trim(),
         guardian_email || null,
         guardian_addr  || null,
@@ -289,7 +280,7 @@ exports.create = async (req, res) => {
     console.log(`[admissions] created id=${result.insertId} name="${first_name} ${last_name}"`);
 
     // Auto-send acknowledgement email to parent (non-blocking — never fails the request)
-    if (saved && saved.parent_email) {
+    if (saved && saved.guardian_email) {
       setImmediate(async () => {
         try {
           const emailSvc = require('../services/emailService');
@@ -302,8 +293,8 @@ exports.create = async (req, res) => {
             principal: settings.principal_name   || 'The Principal',
           };
           const tmpl = emailSvc.templates.admissionAcknowledgement(normaliseRow(saved), school);
-          await emailSvc.sendEmail({ to: saved.parent_email, ...tmpl });
-          console.log('[admissions] ack email sent to', saved.parent_email);
+          await emailSvc.sendEmail({ to: saved.guardian_email, ...tmpl });
+          console.log('[admissions] ack email sent to', saved.guardian_email);
         } catch(e) {
           console.warn('[admissions] ack email failed:', e.message);
         }
@@ -367,7 +358,7 @@ exports.approve = async (req, res) => {
       return fail(res, 400, 'assignedClass and assignedArm are required.');
 
     await db.run(
-      `UPDATE admissions SET status='Approved', assigned_class=?, assigned_arm=?, applying_for_class=?, preferred_arm=?, notes=? WHERE id=?`,
+      `UPDATE admissions SET status='Approved', assigned_class=?, assigned_arm=?, class_apply=?, preferred_arm=?, notes=? WHERE id=?`,
       [assignedClass, assignedArm, assignedClass, assignedArm, notes ?? row.notes, req.params.id]
     );
     const updated = await db.query1('SELECT * FROM admissions WHERE id=?', [req.params.id]);
@@ -397,7 +388,7 @@ exports.enroll = async (req, res) => {
     if (!row) return fail(res, 404, 'Admission record not found.');
     if (row.status !== 'Approved') return fail(res, 400, 'Only Approved applications can be enrolled.');
 
-    const cls = req.body.assignedClass || row.assigned_class || row.applying_for_class || row.class_apply;
+    const cls = req.body.assignedClass || row.assigned_class || row.class_apply;
     const arm = req.body.arm           || row.assigned_arm  || row.preferred_arm;
     if (!cls || !arm) return fail(res, 400, 'Class and arm are required.');
 
@@ -589,9 +580,9 @@ exports.debug = async (req, res) => {
     // Test INSERT with exact same types the form sends
     const ins = await db.run(
       `INSERT INTO admissions
-         (first_name, last_name, gender, dob, applying_for_class,
-          session, parent_name, parent_phone, status, applied_at)
-       VALUES (?,?,?,?,?,?,?,?,'Draft',CURDATE())`,
+         (first_name, last_name, gender, dob, class_apply,
+          acad_session, guardian_name, guardian_phone, status)
+       VALUES (?,?,?,?,?,?,?,?,'Draft')`,
       ['TEST','TEST','Male','2010-01-15','JSS 1','2025/2026','Test Guardian','08012345678']
     );
     if (ins?.insertId) {
