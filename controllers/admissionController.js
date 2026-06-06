@@ -123,6 +123,32 @@ function normaliseRow(a) {
   };
 }
 
+
+/* ── GET /api/admissions/ping ────────────────────────────────────────────────
+   Public endpoint — returns DB connection status and table column list.
+   Used to diagnose 500 errors without needing auth.
+──────────────────────────────────────────────────────────────────────────── */
+exports.ping = async (req, res) => {
+  const result = { ok: false, dbConnected: false, tableExists: false, columns: [], error: null };
+  try {
+    await db.query1('SELECT 1');
+    result.dbConnected = true;
+
+    const cols = await db.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'admissions'
+       ORDER BY ORDINAL_POSITION`
+    );
+    result.tableExists = cols.length > 0;
+    result.columns = cols.map(c => c.COLUMN_NAME);
+    result.ok = true;
+  } catch (e) {
+    result.error = e.message;
+    result.code  = e.code;
+  }
+  return res.json(result);
+};
+
 /* ── GET /api/admissions ─────────────────────────────────────────────────── */
 exports.getAll = async (req, res) => {
   await ensureTable();
@@ -309,8 +335,14 @@ exports.create = async (req, res) => {
     return ok(res, normaliseRow(saved), {}, 201);
 
   } catch (e) {
-    console.error('[admissions/create] ERROR:', e.message, '| CODE:', e.code, '| SQL:', e.sql?.slice(0,80));
-    return fail(res, 500, `Database error: ${e.message}`);
+    console.error('[admissions/create] ERROR:', e.message, '| CODE:', e.code, '| SQL:', e.sql?.slice(0,120));
+    // Include error code in response to help debug
+    return res.status(500).json({
+      success: false,
+      message: `Database error: ${e.message}`,
+      code: e.code || null,
+      hint: e.sqlMessage || null,
+    });
   }
 };
 

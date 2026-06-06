@@ -9,7 +9,8 @@ const adminOnly = authorize('Admin');
 // Handle OPTIONS preflight for all routes — must be before authenticate
 router.options('*', (req, res) => res.sendStatus(204));
 
-// Public submission (no auth) — anyone can submit a registration form
+// Public routes (no auth)
+router.get('/ping', ctrl.ping);   // DB health check — safe, returns no data
 router.post('/', ctrl.create);
 
 // All other routes require authentication
