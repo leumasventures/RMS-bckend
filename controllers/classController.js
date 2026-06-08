@@ -20,7 +20,7 @@ exports.getAll = async (req, res) => {
     if (user && user.role === 'Teacher') {
       const tc = user.assignedClass || user.assigned_class || null;
       const ta = user.assignedArm   || user.assigned_arm   || null;
-      if (!tc) return ok(res, [], { count: 0 });
+      if (!tc) return next ? next() : exports._getAllAdmin(req, res);
       const rows = await db.query(
         `SELECT c.*, GROUP_CONCAT(a.arm ORDER BY a.arm) AS arms_csv
            FROM classes c LEFT JOIN class_arms a ON a.class_id=c.id
