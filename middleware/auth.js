@@ -136,3 +136,50 @@ exports.authorize = function (...roles) {
     next();
   };
 };
+/**
+ * teacherScope(req, res, next)
+ * Must come after authenticate.
+ * - Admin: passes through unchanged.
+ * - Teacher: injects their assigned_class + assigned_arm into req.query,
+ *   and blocks requests for other classes/arms.
+ * - Also restricts to subjects allocated to that teacher via subjectAllocations.
+ */
+exports.teacherScope = (req, res, next) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ success: false, message: 'Not authenticated.' });
+
+  // Admins see everything
+  if (user.role === 'Admin') return next();
+
+  // Teachers are scoped to their assigned class/arm
+  if (user.role === 'Teacher') {
+    const tc = (user.assignedClass || user.assigned_class || '').trim();
+    const ta = (user.assignedArm   || user.assigned_arm   || '').trim();
+
+    // If the request targets a specific class/arm, block mismatches
+    const reqClass = (req.query.class || req.params.class || '').trim();
+    const reqArm   = (req.query.arm   || req.params.arm   || '').trim();
+
+    if (reqClass && reqClass !== tc) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. You are assigned to ${tc} ${ta} only.`,
+      });
+    }
+    if (reqArm && ta && reqArm !== ta) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. You are assigned to ${tc} ${ta} only.`,
+      });
+    }
+
+    // Inject class/arm into query so getAll automatically filters
+    if (tc) req.query.class = tc;
+    if (ta) req.query.arm   = ta;
+
+    return next();
+  }
+
+  // Any other role (e.g. Staff without Teacher role) — pass through
+  next();
+};
