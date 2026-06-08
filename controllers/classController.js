@@ -14,6 +14,24 @@ const ok   = (res, data, meta = {}, s = 200) => res.status(s).json({ success: tr
 exports.getAll = async (req, res) => {
   try {
     const { level, search } = req.query;
+    const user = req.user;
+
+    // Teachers only see their assigned class
+    if (user && user.role === 'Teacher') {
+      const tc = user.assignedClass || user.assigned_class || null;
+      const ta = user.assignedArm   || user.assigned_arm   || null;
+      if (!tc) return ok(res, [], { count: 0 });
+      const rows = await db.query(
+        `SELECT c.*, GROUP_CONCAT(a.arm ORDER BY a.arm) AS arms_csv
+           FROM classes c LEFT JOIN class_arms a ON a.class_id=c.id
+          WHERE c.name=? GROUP BY c.id`, [tc]);
+      const data = rows.map(r => ({
+        id: r.id, name: r.name, level: r.level,
+        arms: ta ? [ta] : (r.arms_csv ? r.arms_csv.split(',') : []),
+      }));
+      return ok(res, data, { count: data.length });
+    }
+
     let sql = 'SELECT c.*, GROUP_CONCAT(a.arm ORDER BY a.arm) AS arms_csv FROM classes c LEFT JOIN class_arms a ON a.class_id=c.id WHERE 1=1';
     const params = [];
     if (level)  { sql += ' AND c.level = ?';       params.push(level); }
@@ -189,7 +207,18 @@ exports.deleteArm = async (req, res) => {
 /* ── GET /api/classes/:name/students ────────────────────────────────────── */
 exports.getStudents = async (req, res) => {
   try {
-    const { arm } = req.query;
+    let { arm } = req.query;
+    const user = req.user;
+
+    // Teachers scoped to their arm only
+    if (user && user.role === 'Teacher') {
+      const tc = user.assignedClass || user.assigned_class || null;
+      const ta = user.assignedArm   || user.assigned_arm   || null;
+      if (tc && req.params.name !== tc)
+        return res.status(403).json({ success: false, message: `Access denied. You are assigned to ${tc} only.` });
+      if (ta) arm = ta; // force arm to teacher's arm
+    }
+
     const row = await db.query1('SELECT id FROM classes WHERE name=?', [req.params.name]);
     if (!row) return fail(res, 404, 'Class not found.');
 
