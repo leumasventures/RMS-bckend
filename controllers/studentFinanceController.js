@@ -816,3 +816,10 @@ exports.getClassSummary = async (req, res) => {
     return ok(res, result, { count: result.length });
   } catch(e) { return fail(res, 500, e.message); }
 };
+exports.exportClassCSV = async (req, res) => {
+  res.status(501).json({ ok: false, message: 'exportClassCSV not yet implemented.' });
+};
+
+exports.bulkCharge = async (req, res) => {
+  res.status(501).json({ ok: false, message: 'bulkCharge not yet implemented.' });
+};
