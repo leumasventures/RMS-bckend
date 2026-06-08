@@ -1,60 +1,80 @@
 'use strict';
+/**
+ * routes/results.js — Sacred Heart College
+ *
+ * Key changes vs original:
+ *  • GET /student/:studentId   — now parent-accessible (parentAuth + requireOwnStudent)
+ *  • GET /report-card/:studentId — parent-accessible
+ *  • GET /remarks/:studentId   — parent-accessible
+ *  • All write operations still require staff JWT
+ */
 
-const express          = require('express');
-const resultController = require('../controllers/resultController');
-const { authenticate, authorize } = require('../middleware/auth');
+const express = require('express');
+const rc      = require('../controllers/resultsController');
+const { authenticate, authorize }       = require('../middleware/auth');
+const { parentAuth, requireOwnStudent } = require('../middleware/parentAuth');
 
 const router    = express.Router();
+const adminOnly = authorize('Admin');
 const staffOnly = authorize('Admin', 'Teacher');
 
-router.use(authenticate);
+/* ═══════════════════════════════════════════════════════════════════════
+   PARENT + STAFF read routes
+   parentAuth accepts either a parent JWT or a staff JWT.
+   requireOwnStudent blocks parents from viewing other students.
+═══════════════════════════════════════════════════════════════════════ */
 
-/* ── Named / aggregate routes — BEFORE /:id ────────────────────────────── */
+/**
+ * GET /api/results/student/:studentId?term=&session=
+ * All results for a student, optionally filtered by term/session.
+ * Used by the Performance view (all terms) and the Report Card view.
+ */
+router.get('/student/:studentId',
+  parentAuth, requireOwnStudent,
+  rc.getStudentResults
+);
 
-// GET /api/results/stats?class=&arm=&term=&session=
-router.get('/stats', resultController.getStats);
+/**
+ * GET /api/results/report-card/:studentId?term=&session=
+ * Full report card: results + remarks + domain assessments + position.
+ * This is the primary endpoint for the parent Report Card view.
+ */
+router.get('/report-card/:studentId',
+  parentAuth, requireOwnStudent,
+  rc.getReportCard
+);
 
-// GET /api/results/report-card/:studentId?term=&session=
-router.get('/report-card/:studentId', resultController.getReportCard);
+/**
+ * GET /api/results/remarks/:studentId?term=&session=
+ * Teacher and principal remarks only.
+ */
+router.get('/remarks/:studentId',
+  parentAuth, requireOwnStudent,
+  rc.getRemarks
+);
 
-// GET    /api/results/allocations/class/:class/:arm
-router.get('/allocations/class/:class/:arm', resultController.getClassAllocation);
+/* ═══════════════════════════════════════════════════════════════════════
+   STAFF-ONLY routes
+═══════════════════════════════════════════════════════════════════════ */
 
-// PUT    /api/results/allocations/class/:class/:arm   body: { subjects[] }
-router.put('/allocations/class/:class/:arm', staffOnly, resultController.setClassAllocation);
+router.get('/class',          authenticate, staffOnly, rc.getClassResults);
+router.get('/class-summary',  authenticate, staffOnly, rc.getClassSummary);
+router.get('/export',         authenticate, staffOnly, rc.exportResults);
 
-// DELETE /api/results/allocations/class/:class/:arm
-router.delete('/allocations/class/:class/:arm', authorize('Admin'), resultController.clearClassAllocation);
+// Upsert single / bulk results
+router.post('/',              authenticate, staffOnly, rc.upsert);
+router.post('/bulk',          authenticate, staffOnly, rc.bulkUpsert);
 
-// GET    /api/results/allocations/student/:studentId
-router.get('/allocations/student/:studentId', resultController.getStudentAllocation);
+// Remarks
+router.post('/remarks',       authenticate, staffOnly, rc.saveRemarks);
 
-// PUT    /api/results/allocations/student/:studentId  body: { subjects[] }
-router.put('/allocations/student/:studentId', staffOnly, resultController.setStudentAllocation);
+// Domain assessments
+router.get('/domains/:studentId',  authenticate, staffOnly, rc.getDomains);
+router.post('/domains',            authenticate, staffOnly, rc.saveDomains);
 
-// POST   /api/results/allocations/bulk-student  body: { class, arm, subjects[] }
-router.post('/allocations/bulk-student', staffOnly, resultController.bulkSetStudentAllocations);
-
-/* ── Collection CRUD ────────────────────────────────────────────────────── */
-
-// GET /api/results?studentId=&class=&arm=&subject=&term=&session=
-router.get('/', resultController.getAll);
-
-// POST /api/results/bulk   body: { results[], class_id, subject_id, term_id, session_id }
-router.post('/bulk', staffOnly, resultController.bulkCreate);
-
-// POST /api/results        body: { studentId, subject, term, session, ca, exam }
-router.post('/', staffOnly, resultController.create);
-
-/* ── Per-record — /:id last ─────────────────────────────────────────────── */
-
-// GET    /api/results/:id
-router.get('/:id', resultController.getOne);
-
-// PUT    /api/results/:id  body: { ca?, exam? }
-router.put('/:id', staffOnly, resultController.update);
-
-// DELETE /api/results/:id
-router.delete('/:id', authorize('Admin'), resultController.remove);
+// Single result CRUD
+router.get('/:id',            authenticate, rc.getOne);
+router.put('/:id',            authenticate, staffOnly, rc.update);
+router.delete('/:id',         authenticate, adminOnly, rc.remove);
 
 module.exports = router;

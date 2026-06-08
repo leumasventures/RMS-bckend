@@ -1,106 +1,66 @@
 'use strict';
 /**
- * studentFinance.js — uses query param ?sid= to avoid Express
- * decoding %2F in path params (SHC/001 problem).
+ * routes/studentFinance.js — Sacred Heart College
+ *
+ * Key changes vs original:
+ *  • All GET (read) endpoints accept parent JWT via parentAuth.
+ *    requireOwnStudent ensures parents only see their ward's data.
+ *    The ?sid= query param is bridged to req.params.studentId via sidToParam.
+ *  • All POST/PATCH/DELETE (write) endpoints still require staff JWT.
  */
-const express  = require('express');
-const sfc      = require('../controllers/studentFinanceController');
-const { authenticate, authorize } = require('../middleware/auth');
 
-const router        = express.Router();
-const adminBursar   = authorize('Admin', 'Bursar');
-const adminOnly     = authorize('Admin');
-const anyAllowed    = authorize('Admin', 'Bursar', 'Teacher', 'Staff', 'Parent');
+const express = require('express');
+const fc      = require('../controllers/studentFinanceController');
+const { authenticate, authorize }       = require('../middleware/auth');
+const { parentAuth, requireOwnStudent } = require('../middleware/parentAuth');
 
-router.options('*', (_req, res) => res.sendStatus(204));
+const router      = express.Router();
+const adminBursar = [authenticate, authorize('Admin', 'Bursar')];
+const adminOnly   = [authenticate, authorize('Admin')];
 
-/* ── Public parent portal routes — verified by student ID + phone ───────
-   No auth token needed. Parent provides ?sid=SHC/001&phone=08012345678
-   Phone is verified against students.phone / parent_phone.
-   Only summary, charges, levies, attendance, results exposed.
-─────────────────────────────────────────────────────────────────────────── */
-async function parentPhoneAuth(req, res, next) {
-  const db      = require('../config/db');
-  const { sid, phone } = req.query;
-  if (!sid || !phone)
-    return res.status(400).json({ success: false, message: 'sid and phone required.' });
-
-  // Query DB directly so new SAHARCO IDs are always found
-  const student = await db.query1(
-    'SELECT * FROM students WHERE id = ?', [decodeURIComponent(sid)]
-  ).catch(() => null);
-
-  if (!student)
-    return res.status(404).json({ success: false, message: 'Student not found.' });
-
-  const stored  = (student.phone || student.parent_phone || '').replace(/\s/g,'').replace(/^(\+234|234)/, '0');
-  const entered = decodeURIComponent(phone).replace(/\s/g,'').replace(/^(\+234|234)/, '0');
-
-  if (!stored || entered.slice(-8) !== stored.slice(-8))
-    return res.status(403).json({ success: false, message: 'Phone number does not match.' });
-
-  req.params.studentId = student.id;
-  req.user = { role: 'Parent', ward_id: student.id, wardId: student.id, name: student.name };
-  next();
-}
-
-router.get('/pp/summary',  parentPhoneAuth, sfc.getSummary);
-router.get('/pp/charges',  parentPhoneAuth, sfc.getCharges);
-router.get('/pp/levies',   parentPhoneAuth, sfc.getLevies);
-router.get('/pp/payments', parentPhoneAuth, sfc.getPayments);
-router.get('/pp/ledger',   parentPhoneAuth, sfc.getLedger);
-
-router.use(authenticate);
-
-/* ── Inject studentId from query param ─────────────────────────── */
-function sid(req, res, next) {
-  const id = req.query.sid || req.query.studentId;
-  if (!id) return res.status(400).json({ success: false, message: 'sid (studentId) query param is required.' });
-  req.params.studentId = id;
-  next();
-}
-
-/* ── Parent ward isolation ──────────────────────────────────────
-   Parents may only access their own ward's data.
-   All other roles (Admin, Bursar, Teacher, Staff) can access any student.
-─────────────────────────────────────────────────────────────────── */
-function guardParentAccess(req, res, next) {
-  const user = req.user;
-  if (!user) return res.status(401).json({ success: false, message: 'Not authenticated.' });
-
-  if (user.role === 'Parent') {
-    const wardId = user.ward_id || user.wardId;
-    const requestedId = req.params.studentId;
-    if (!wardId) {
-      return res.status(403).json({ success: false, message: 'No ward linked to your account. Contact the administrator.' });
-    }
-    if (String(wardId) !== String(requestedId)) {
-      return res.status(403).json({ success: false, message: 'Access denied. You can only view your own ward\'s financial records.' });
-    }
+/* ── Bridge ?sid= query param into req.params for requireOwnStudent ── */
+function sidToParam(req, _res, next) {
+  if (req.query.sid && !req.params.studentId) {
+    req.params.studentId = req.query.sid;
   }
   next();
 }
 
-/* ── READ endpoints ─────────────────────────────────────────────
-   Admin, Bursar, Teacher, Staff: any student
-   Parent: own ward only (enforced by guardParentAccess)
-─────────────────────────────────────────────────────────────────── */
-router.get('/summary',            anyAllowed, sid, guardParentAccess, sfc.getSummary);
-router.get('/charges',            anyAllowed, sid, guardParentAccess, sfc.getCharges);
-router.get('/payments',           anyAllowed, sid, guardParentAccess, sfc.getPayments);
-router.get('/levies',             anyAllowed, sid, guardParentAccess, sfc.getLevies);
-router.get('/ledger',             anyAllowed, sid, guardParentAccess, sfc.getLedger);
-router.get('/statement',          anyAllowed, sid, guardParentAccess, sfc.getStatement);
-router.get('/export',             anyAllowed, sid, guardParentAccess, sfc.exportCSV);
-router.get('/receipt/:paymentId', anyAllowed, sid, guardParentAccess, sfc.getReceipt);
+/* ═══════════════════════════════════════════════════════════════════════
+   READ endpoints — parent JWT OR staff JWT accepted
+═══════════════════════════════════════════════════════════════════════ */
 
-/* ── WRITE endpoints ────────────────────────────────────────────
-   Only Admin + Bursar can write. Parents and Teachers cannot.
-─────────────────────────────────────────────────────────────────── */
-router.post('/pay',        adminBursar, sid, sfc.recordPayment);
-router.post('/pay-all',    adminBursar, sid, sfc.payAll);
-router.post('/charge',     adminBursar, sid, sfc.addCharge);
-router.post('/adjustment', adminOnly,   sid, sfc.addAdjustment);
-router.get('/class-summary', anyAllowed, sfc.getClassSummary);
+router.get('/summary',  sidToParam, parentAuth, requireOwnStudent, fc.getSummary);
+router.get('/charges',  sidToParam, parentAuth, requireOwnStudent, fc.getCharges);
+router.get('/payments', sidToParam, parentAuth, requireOwnStudent, fc.getPayments);
+router.get('/levies',   sidToParam, parentAuth, requireOwnStudent, fc.getLevies);
+router.get('/ledger',   sidToParam, parentAuth, requireOwnStudent, fc.getLedger);
+
+/* ═══════════════════════════════════════════════════════════════════════
+   STAFF-ONLY exports & class views
+═══════════════════════════════════════════════════════════════════════ */
+
+router.get('/export',         ...adminBursar, fc.exportCSV);
+router.get('/export-class',   ...adminBursar, fc.exportClassCSV);
+router.get('/class-summary',  ...adminBursar, fc.getClassSummary);
+
+/* ═══════════════════════════════════════════════════════════════════════
+   WRITE endpoints — staff only
+═══════════════════════════════════════════════════════════════════════ */
+
+// Record a payment against an existing charge
+router.post('/pay',         ...adminBursar, fc.recordPayment);
+
+// Pay all outstanding charges in one bulk payment
+router.post('/pay-all',     ...adminBursar, fc.payAll);
+
+// Add a single charge / direct payment
+router.post('/charge',      ...adminBursar, fc.addCharge);
+
+// Bulk assign a fee to an entire class
+router.post('/bulk-charge', ...adminBursar, fc.bulkCharge);
+
+// Manual ledger adjustment — Admin only
+router.post('/adjustment',  ...adminOnly,   fc.addAdjustment);
 
 module.exports = router;
