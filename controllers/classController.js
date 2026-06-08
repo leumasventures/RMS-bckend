@@ -20,7 +20,17 @@ exports.getAll = async (req, res) => {
     if (user && user.role === 'Teacher') {
       const tc = user.assignedClass || user.assigned_class || null;
       const ta = user.assignedArm   || user.assigned_arm   || null;
-      if (!tc) return next ? next() : exports._getAllAdmin(req, res);
+      if (!tc) {
+        // No class assigned yet — return all classes so portal isn't broken
+        const allRows = await db.query(
+          'SELECT c.*, GROUP_CONCAT(a.arm ORDER BY a.arm) AS arms_csv FROM classes c LEFT JOIN class_arms a ON a.class_id=c.id GROUP BY c.id ORDER BY c.name'
+        );
+        const allData = allRows.map(r => ({
+          id: r.id, name: r.name, level: r.level,
+          arms: r.arms_csv ? r.arms_csv.split(',') : [],
+        }));
+        return ok(res, allData, { count: allData.length });
+      }
       const rows = await db.query(
         `SELECT c.*, GROUP_CONCAT(a.arm ORDER BY a.arm) AS arms_csv
            FROM classes c LEFT JOIN class_arms a ON a.class_id=c.id
