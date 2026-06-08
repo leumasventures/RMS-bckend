@@ -160,13 +160,13 @@ exports.teacherScope = (req, res, next) => {
     const reqClass = (req.query.class || req.params.class || '').trim();
     const reqArm   = (req.query.arm   || req.params.arm   || '').trim();
 
-    if (reqClass && reqClass !== tc) {
+    if (tc && reqClass && reqClass !== tc) {
       return res.status(403).json({
         success: false,
         message: `Access denied. You are assigned to ${tc} ${ta} only.`,
       });
     }
-    if (reqArm && ta && reqArm !== ta) {
+    if (tc && ta && reqArm && reqArm !== ta) {
       return res.status(403).json({
         success: false,
         message: `Access denied. You are assigned to ${tc} ${ta} only.`,
