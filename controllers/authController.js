@@ -129,6 +129,9 @@ function resetRateLimit(ip) {
 function safeUser(user) {
   // eslint-disable-next-line no-unused-vars
   const { passwordHash, password_hash, ...safe } = user;
+  // Normalise snake_case DB columns to camelCase for the frontend
+  safe.assignedClass = safe.assigned_class ?? safe.assignedClass ?? null;
+  safe.assignedArm   = safe.assigned_arm   ?? safe.assignedArm   ?? null;
   return safe;
 }
 
