@@ -528,15 +528,16 @@ const db = {
     const subj   = db.subjects.find(s => s.name === data.subject);
     const subjId  = subj?.id ?? null;
 
+    // NOTE: `total` is a GENERATED ALWAYS column (ca + exam) — must NOT be in INSERT/UPDATE
     await run(
       `INSERT INTO results
-         (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam, total)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
-         ca=VALUES(ca), exam=VALUES(exam), total=VALUES(total)`,
+         ca=VALUES(ca), exam=VALUES(exam)`,
       [
         data.studentId, classId, data.arm, subjId, data.subject,
-        data.term, data.session, data.ca, data.exam, data.total,
+        data.term, data.session, data.ca, data.exam,
       ]
     );
 
