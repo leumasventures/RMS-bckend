@@ -613,11 +613,10 @@ exports.enroll = async (req, res) => {
     const arm = req.body.arm           || row.assigned_arm   || row.preferred_arm;
     if (!cls || !arm) return fail(res, 400, 'Class and arm are required.');
 
-    // With this:
-    const clsObj = db.findClass(cls) 
-      || db.findClass(cls.replace('SS','S').trim())   // "SS 3" → "S 3"
-      || db.findClass(cls.replace('JSS','JS').trim())  // "JSS 1" → "JS 1"
-      || { id: cls, name: cls };                       // fallback: use as-is
+    // Live DB lookup — avoids cold-start cache miss
+    const clsRow = await db.query1('SELECT id, name FROM classes WHERE name=?', [cls]);
+    if (!clsRow) return fail(res, 400, `Class "${cls}" not found in the system.`);
+    const clsObj = clsRow;
     
     const studentId = await generateStudentId();
 
@@ -686,7 +685,7 @@ exports.bulkEnroll = async (req, res) => {
       const arm = item.arm      || admission.assigned_arm   || admission.preferred_arm;
       if (!cls || !arm) { errors.push({ item: i + 1, reason: 'Missing class/arm.' }); continue; }
 
-      const clsObj = db.findClass(cls);
+      const clsObj = await db.query1('SELECT id, name FROM classes WHERE name=?', [cls]);
       if (!clsObj) { errors.push({ item: i + 1, reason: `Class "${cls}" not found.` }); continue; }
 
       try {
