@@ -144,42 +144,34 @@ exports.authorize = function (...roles) {
  *   and blocks requests for other classes/arms.
  * - Also restricts to subjects allocated to that teacher via subjectAllocations.
  */
-exports.teacherScope = (req, res, next) => {
+
+
+exports.teacherScope = async (req, res, next) => {
   const user = req.user;
   if (!user) return res.status(401).json({ success: false, message: 'Not authenticated.' });
-
-  // Admins see everything
-  if (user.role === 'Admin') return next();
-
-  // Teachers are scoped to their assigned class/arm
-  if (user.role === 'Teacher') {
-    const tc = (user.assignedClass || user.assigned_class || '').trim();
-    const ta = (user.assignedArm   || user.assigned_arm   || '').trim();
-
-    // If the request targets a specific class/arm, block mismatches
-    const reqClass = (req.query.class || req.params.class || '').trim();
-    const reqArm   = (req.query.arm   || req.params.arm   || '').trim();
-
-    if (tc && reqClass && reqClass !== tc) {
-      return res.status(403).json({
-        success: false,
-        message: `Access denied. You are assigned to ${tc} ${ta} only.`,
-      });
-    }
-    if (tc && ta && reqArm && reqArm !== ta) {
-      return res.status(403).json({
-        success: false,
-        message: `Access denied. You are assigned to ${tc} ${ta} only.`,
-      });
-    }
-
-    // Inject class/arm into query so getAll automatically filters
-    if (tc) req.query.class = tc;
-    if (ta) req.query.arm   = ta;
-
-    return next();
+  if (user.role !== 'Teacher') return next();
+  const tc = (user.assignedClass || user.assigned_class || '').trim();
+  const ta = (user.assignedArm   || user.assigned_arm   || '').trim();
+  const reqClass = (req.query.class || req.params.class || '').trim();
+  const reqArm   = (req.query.arm   || req.params.arm   || '').trim();
+  if (tc && reqClass && reqClass !== tc)
+    return res.status(403).json({ success: false, message: `Access denied. You are assigned to ${tc} ${ta} only.` });
+  if (tc && ta && reqArm && reqArm !== ta)
+    return res.status(403).json({ success: false, message: `Access denied. You are assigned to ${tc} ${ta} only.` });
+  if (tc) req.query.class = tc;
+  if (ta) req.query.arm   = ta;
+  if (tc && ta && req.method === 'POST' && req.body && req.body.subject) {
+    try {
+      const db = require('../config/db');
+      const clsRow = await db.query1('SELECT id FROM classes WHERE name=?', [tc]);
+      if (clsRow) {
+        const alloc = await db.query(
+          'SELECT s.name FROM class_subject_allocations a JOIN subjects s ON s.id=a.subject_id WHERE a.class_id=? AND a.arm=?',
+          [clsRow.id, ta]);
+        if (alloc.length && !alloc.find(s => s.name === req.body.subject))
+          return res.status(403).json({ success: false, message: `"${req.body.subject}" is not allocated to ${tc} ${ta}.` });
+      }
+    } catch (e) { console.warn('[teacherScope] subject check:', e.message); }
   }
-
-  // Any other role (e.g. Staff without Teacher role) — pass through
   next();
 };
