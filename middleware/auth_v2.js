@@ -1,0 +1,227 @@
+'use strict';
+
+/**
+ * middleware/auth.js — Sacred Heart College Eziukwu Aba (SAHARCO)
+ * ─────────────────────────────────────────────────────────────────
+ * Authenticates requests by reading a JWT from:
+ *   1. Authorization: Bearer <token>  header  (preferred — works cross-origin)
+ *   2. access_token HttpOnly cookie           (fallback — same-origin only)
+ *
+ * The frontend stores the token in sessionStorage after login and sends it
+ * as a Bearer header on every request via api.js.  The cookie path is kept
+ * as a fallback for same-origin deployments or future SSR pages.
+ */
+
+const jwt = require('jsonwebtoken');
+const db  = require('../config/db');
+
+const JWT_SECRET = process.env.JWT_ACCESS_SECRET;
+
+if (!JWT_SECRET) throw new Error('JWT_ACCESS_SECRET environment variable is not set.');
+
+/**
+ * authenticate(req, res, next)
+ * Reads the JWT from the Authorization header (Bearer) or cookie.
+ * Attaches the full user record to req.user on success.
+ * Returns 401 on missing/invalid/expired token.
+ */
+/* Set CORS headers on error responses so browser can read 401/403 */
+function setCorsOnError(req, res) {
+  const origin  = req.headers.origin;
+  const allowed = [
+    'https://sacredheartcollegeaba.com',
+    'https://www.sacredheartcollegeaba.com',
+    'http://localhost:3000', 'http://localhost:5000',
+    'http://localhost:5002', 'http://127.0.0.1:5500',
+  ];
+  if (origin && allowed.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+}
+
+exports.authenticate = async (req, res, next) => {
+  try {
+    // ── 1. Extract token ────────────────────────────────────────────────────
+    let token = null;
+
+    // Authorization: Bearer <token>  (sent by api.js on every request)
+    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.slice(7).trim();
+    }
+
+    // Fallback: HttpOnly cookie (same-origin or browser-native requests)
+    if (!token && req.cookies && req.cookies.access_token) {
+      token = req.cookies.access_token;
+    }
+
+    if (!token) {
+      setCorsOnError(req, res);
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required. Please log in.',
+      });
+    }
+
+    // ── 2. Verify token ─────────────────────────────────────────────────────
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+    } catch (err) {
+      const message = err.name === 'TokenExpiredError'
+        ? 'Session has expired. Please log in again.'
+        : 'Invalid token. Please log in again.';
+      setCorsOnError(req, res);
+      return res.status(401).json({ success: false, message });
+    }
+
+    // ── 3. Load user from DB ────────────────────────────────────────────────
+    // Use getUserById if available; fall back to findUserById for in-memory stores
+    const user = await (db.getUserById
+      ? db.getUserById(payload.id)
+      : Promise.resolve(db.findUserById && db.findUserById(payload.id)));
+
+    if (!user) {
+      setCorsOnError(req, res);
+      return res.status(401).json({
+        success: false,
+        message: 'Account not found. Please log in again.',
+      });
+    }
+
+    if (user.active === false) {
+      setCorsOnError(req, res);
+      return res.status(403).json({
+        success: false,
+        message: 'This account has been deactivated. Please contact the administrator.',
+      });
+    }
+
+    // ── 4. Attach to request ────────────────────────────────────────────────
+    req.user = user;
+    next();
+
+  } catch (err) {
+    console.error('[auth middleware] Unexpected error:', err.message || err);
+    setCorsOnError(req, res);
+    return res.status(503).json({ success: false, message: 'Service temporarily unavailable. Please retry.' });
+  }
+};
+
+/**
+ * authorize(...roles)
+ * Role-based access control — use after authenticate.
+ *
+ * Usage:
+ *   router.delete('/classes/:id', authenticate, authorize('Admin'), handler)
+ *
+ * @param {...string} roles  Allowed roles (case-insensitive)
+ */
+exports.authorize = function (...roles) {
+  const allowed = roles.map(r => r.toLowerCase());
+  return (req, res, next) => {
+    if (!req.user) {
+      setCorsOnError(req, res);
+      return res.status(401).json({ success: false, message: 'Not authenticated.' });
+    }
+    if (!allowed.includes((req.user.role || '').toLowerCase())) {
+      setCorsOnError(req, res);
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. Required role: ${roles.join(' or ')}.`,
+      });
+    }
+    next();
+  };
+};
+/**
+ * teacherScope(req, res, next)
+ * Must come after authenticate.
+ * - Admin: passes through unchanged.
+ * - Teacher: injects their assigned_class + assigned_arm into req.query,
+ *   and blocks requests for other classes/arms.
+ * - Also restricts to subjects allocated to that teacher via subjectAllocations.
+ */
+exports.teacherScope = async (req, res, next) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ success: false, message: 'Not authenticated.' });
+
+  // Admins see everything
+  if (user.role === 'Admin') return next();
+
+  // Teachers are scoped to their assigned class/arm
+  if (user.role === 'Teacher') {
+    const tc = (user.assignedClass || user.assigned_class || '').trim();
+    const ta = (user.assignedArm   || user.assigned_arm   || '').trim();
+
+    // If the request targets a specific class/arm, block mismatches
+    const reqClass = (req.query.class || req.params.class || '').trim();
+    const reqArm   = (req.query.arm   || req.params.arm   || '').trim();
+
+    if (tc && reqClass && reqClass !== tc) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. You are assigned to ${tc} ${ta} only.`,
+      });
+    }
+    if (tc && ta && reqArm && reqArm !== ta) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. You are assigned to ${tc} ${ta} only.`,
+      });
+    }
+
+    // Block teachers from entering scores for subjects not allocated to their class/arm
+    if (req.method === 'POST' && tc && ta) {
+      // Collect subject name(s) from either single-entry or bulk payload shapes
+      const subjectNames = new Set();
+      const single = req.body?.subject || req.body?.subjectName || req.body?.subject_name;
+      if (single) subjectNames.add(single);
+      const rows = Array.isArray(req.body?.results) ? req.body.results
+                 : Array.isArray(req.body?.rows)    ? req.body.rows
+                 : [];
+      rows.forEach(r => {
+        const s = r?.subject || r?.subjectName || r?.subject_name;
+        if (s) subjectNames.add(s);
+      });
+
+      if (subjectNames.size) {
+        try {
+          const clsRow = await db.query1('SELECT id FROM classes WHERE name=?', [tc]);
+          if (clsRow) {
+            const alloc = await db.query(
+              `SELECT s.name FROM class_subject_allocations a
+               JOIN subjects s ON s.id = a.subject_id
+               WHERE a.class_id = ? AND a.arm = ?`,
+              [clsRow.id, ta]
+            );
+            if (alloc.length) {
+              const allowed = new Set(alloc.map(s => s.name));
+              const blocked = [...subjectNames].filter(s => !allowed.has(s));
+              if (blocked.length) {
+                return res.status(403).json({
+                  success: false,
+                  message: `"${blocked.join(', ')}" is not allocated to ${tc} ${ta}.`,
+                });
+              }
+            }
+          }
+        } catch (e) {
+          console.error('[teacherScope] allocation check error:', e.message);
+          // Fail open — don't block on infra error
+        }
+      }
+    }
+
+    // Inject class/arm into query so getAll automatically filters
+    if (tc) req.query.class = tc;
+    if (ta) req.query.arm   = ta;
+
+    return next();
+  }
+
+  // Any other role (e.g. Staff without Teacher role) — pass through
+  next();
+};
