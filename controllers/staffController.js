@@ -196,6 +196,14 @@ exports.assignClass = async (req, res) => {
     if (!row) return fail(res, 404, 'Staff not found.');
     const cls = classUnit ? await db.query1('SELECT id FROM classes WHERE name=?', [classUnit]) : null;
     await db.run('UPDATE staff SET class_id=?, arm=? WHERE id=?', [cls?.id || null, arm || null, req.params.id]);
+
+    // FIX: also sync to users table — this is what login/safeUser() reads
+    // and what teacherScope middleware uses for class/arm/subject restriction.
+    await db.run(
+      'UPDATE users SET assigned_class=?, assigned_arm=? WHERE staff_id=?',
+      [classUnit || null, arm || null, req.params.id]
+    );
+
     const cached = db.staff.find(s => s.id === req.params.id);
     if (cached) { cached.class = classUnit || ''; cached.arm = arm || ''; }
     return ok(res, { id: req.params.id, assignedClass: classUnit, assignedArm: arm });
