@@ -528,6 +528,12 @@ const db = {
     const subj   = db.subjects.find(s => s.name === data.subject);
     const subjId  = subj?.id ?? null;
 
+    // Clamp scores to their configured maxima (defensive — callers should also clamp)
+    const maxCA   = db.getMaxCA();
+    const maxExam = db.getMaxExam();
+    const caVal   = Math.min(maxCA,   Math.max(0, parseFloat(data.ca)   || 0));
+    const examVal = Math.min(maxExam, Math.max(0, parseFloat(data.exam) || 0));
+
     // NOTE: `total` is a GENERATED ALWAYS column (ca + exam) — must NOT be in INSERT/UPDATE
     await run(
       `INSERT INTO results
@@ -537,7 +543,7 @@ const db = {
          ca=VALUES(ca), exam=VALUES(exam)`,
       [
         data.studentId, classId, data.arm, subjId, data.subject,
-        data.term, data.session, data.ca, data.exam,
+        data.term, data.session, caVal, examVal,
       ]
     );
 
@@ -554,9 +560,9 @@ const db = {
       subject:   data.subject,
       term:      data.term,
       session:   data.session,
-      ca:        data.ca,
-      exam:      data.exam,
-      total:     data.total,
+      ca:        caVal,
+      exam:      examVal,
+      total:     caVal + examVal,
     };
 
     const idx = db.results.findIndex(r =>

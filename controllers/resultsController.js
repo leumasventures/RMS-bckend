@@ -51,16 +51,28 @@ exports.bulkUpsert = async (req, res) => {
 
     for (const item of results) {
       try {
+        // Accept both camelCase (studentId) and snake_case (student_id)
+        const studentId = item.studentId || item.student_id;
+        if (!studentId) { errors.push({ item, error: 'missing studentId' }); continue; }
+
+        const maxCA   = db.getMaxCA();
+        const maxExam = db.getMaxExam();
+        const caVal   = Math.min(maxCA,   Math.max(0, parseFloat(item.ca)   || 0));
+        const examVal = Math.min(maxExam, Math.max(0, parseFloat(item.exam) || 0));
+        if (caVal + examVal > 100) {
+          errors.push({ item, error: `Total score ${caVal + examVal} exceeds 100` }); continue;
+        }
+
         const record = await db.upsertResult({
-          studentId: item.studentId,
+          studentId,
           subject:   item.subject,
           class:     item.class,
           arm:       item.arm,
           term:      item.term    || defTerm,
           session:   item.session || defSession,
-          ca:        item.ca    ?? 0,
-          exam:      item.exam  ?? 0,
-          total:     item.total ?? (( item.ca ?? 0) + (item.exam ?? 0)),
+          ca:        caVal,
+          exam:      examVal,
+          total:     caVal + examVal,
         });
         saved.push(record);
       } catch (e) {
