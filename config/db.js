@@ -197,71 +197,71 @@ const db = {
       class_id     INT UNSIGNED DEFAULT NULL,
       arm          VARCHAR(10),
       subject_id   INT UNSIGNED DEFAULT NULL,
-      subject_name VARCHAR(80)  NOT NULL,
+      subject_name VARCHAR(80)  NOT NULL DEFAULT '',
       term         VARCHAR(30)  NOT NULL,
       session      VARCHAR(20)  NOT NULL,
       ca           TINYINT UNSIGNED DEFAULT 0,
       exam         TINYINT UNSIGNED DEFAULT 0,
-      total        TINYINT UNSIGNED GENERATED ALWAYS AS (ca + exam) STORED,
+      total        TINYINT UNSIGNED DEFAULT 0,
       created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY   uniq_result (student_id, subject_name, term, session)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
 
-    /* ── Migrate results table if it was created from old schema_fixed.js ─
-       Old schema used "subject" and "class_name" instead of
-       "subject_name" and "class_id". Detect and rename if needed.        */
+    /* ── Migrate old schema: fix column names if needed ─────────────────── */
     try {
       const resCols = await q(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+        `SELECT COLUMN_NAME, EXTRA FROM INFORMATION_SCHEMA.COLUMNS
          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'results'`
       );
-      const resColSet = new Set(resCols.map(r => r.COLUMN_NAME));
+      const colMap = {};
+      resCols.forEach(c => { colMap[c.COLUMN_NAME] = (c.EXTRA || '').toLowerCase(); });
 
-      // Rename "subject" → "subject_name" (old schema used "subject")
-      if (resColSet.has('subject') && !resColSet.has('subject_name')) {
-        await q(`ALTER TABLE results CHANGE COLUMN \`subject\` subject_name VARCHAR(80) NOT NULL`)
+      // Step 1: drop index FIRST (required before renaming columns in the index)
+      if (colMap['subject'] !== undefined && colMap['subject_name'] === undefined) {
+        await q(`ALTER TABLE results DROP INDEX uniq_result`).catch(() => {});
+        // Rename subject → subject_name
+        await q(`ALTER TABLE results CHANGE COLUMN \`subject\` subject_name VARCHAR(80) NOT NULL DEFAULT ''`)
           .catch(e => console.warn('[db] rename subject→subject_name:', e.message));
-        console.log('[db] Migrated results.subject → results.subject_name');
+        // Recreate index
+        await q(`ALTER TABLE results ADD UNIQUE KEY uniq_result (student_id, subject_name, term, session)`)
+          .catch(e => console.warn('[db] recreate uniq_result:', e.message));
+        console.log('[db] Migrated results.subject → subject_name');
+        colMap['subject_name'] = '';
+        delete colMap['subject'];
       }
 
-      // Add subject_name if missing entirely
-      if (!resColSet.has('subject_name') && !resColSet.has('subject')) {
-        await q(`ALTER TABLE results ADD COLUMN subject_name VARCHAR(80) NOT NULL DEFAULT '' AFTER arm`)
-          .catch(e => console.warn('[db] add subject_name:', e.message));
-      }
-
-      // Replace "class_name" with "class_id" (old schema used class_name VARCHAR)
-      if (resColSet.has('class_name') && !resColSet.has('class_id')) {
+      // Step 2: add class_id if missing (old schema had class_name)
+      if (colMap['class_id'] === undefined) {
         await q(`ALTER TABLE results ADD COLUMN class_id INT UNSIGNED DEFAULT NULL AFTER student_id`)
-          .catch(e => console.warn('[db] add class_id to results:', e.message));
-        // Drop class_name (data in it is not useful — class_id is resolved at INSERT time)
+          .catch(e => console.warn('[db] add class_id:', e.message));
+      }
+      if (colMap['class_name'] !== undefined) {
         await q(`ALTER TABLE results DROP COLUMN class_name`)
-          .catch(e => console.warn('[db] drop class_name from results:', e.message));
-        console.log('[db] Migrated results.class_name → results.class_id');
+          .catch(e => console.warn('[db] drop class_name:', e.message));
       }
 
-      // Add subject_id if missing
-      if (!resColSet.has('subject_id')) {
-        await q(`ALTER TABLE results ADD COLUMN subject_id INT UNSIGNED DEFAULT NULL AFTER class_id`)
+      // Step 3: add subject_id if missing
+      if (colMap['subject_id'] === undefined) {
+        await q(`ALTER TABLE results ADD COLUMN subject_id INT UNSIGNED DEFAULT NULL`)
           .catch(e => console.warn('[db] add subject_id:', e.message));
       }
 
-      // Fix UNIQUE KEY if it still references old "subject" column name
-      // (MySQL won't let you rename a column that's part of a UNIQUE KEY without recreating it)
-      const uks = await q(
-        `SELECT INDEX_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'results'
-         AND INDEX_NAME = 'uniq_result'`
-      ).catch(() => []);
-      const ukCols = uks.map(r => r.COLUMN_NAME);
-      if (ukCols.includes('subject') || (!ukCols.includes('subject_name') && ukCols.length)) {
-        await q(`ALTER TABLE results DROP INDEX uniq_result`).catch(() => {});
-        await q(`ALTER TABLE results ADD UNIQUE KEY uniq_result (student_id, subject_name, term, session)`)
-          .catch(e => console.warn('[db] recreate uniq_result:', e.message));
-        console.log('[db] Recreated uniq_result index on subject_name');
+      // Step 4: if total is GENERATED ALWAYS, change to regular column so both schemas work
+      const totalExtra = colMap['total'] || '';
+      if (totalExtra.includes('generated') || totalExtra.includes('virtual') || totalExtra.includes('stored')) {
+        await q(`ALTER TABLE results MODIFY COLUMN total TINYINT UNSIGNED DEFAULT 0`)
+          .catch(e => console.warn('[db] convert total from GENERATED to regular:', e.message));
+        console.log('[db] Converted total from GENERATED ALWAYS to regular column');
       }
-    } catch (e) { console.warn('[db] results migration check failed:', e.message); }
+
+      // Step 5: add total column if missing entirely
+      if (colMap['total'] === undefined) {
+        await q(`ALTER TABLE results ADD COLUMN total TINYINT UNSIGNED DEFAULT 0`)
+          .catch(e => console.warn('[db] add total column:', e.message));
+      }
+
+    } catch (e) { console.warn('[db] results migration error:', e.message); }
 
     const [
       classRows, armRows, studentRows, staffRows,
@@ -604,15 +604,17 @@ const db = {
   /* ── RESULT HELPERS ──────────────────────────────────────── */
 
   async findResult(studentId, subjectName, term, session) {
+    const sc = db._subjectColName || 'subject_name';
     return q1(
-      'SELECT * FROM results WHERE student_id=? AND subject_name=? AND term=? AND session=?',
+      `SELECT * FROM results WHERE student_id=? AND ${sc}=? AND term=? AND session=?`,
       [studentId, subjectName, term, session]
     );
   },
 
   async countSubjectsForStudent(studentId, term, session) {
+    const sc = db._subjectColName || 'subject_name';
     const row = await q1(
-      `SELECT COUNT(DISTINCT subject_name) AS cnt
+      `SELECT COUNT(DISTINCT ${sc}) AS cnt
        FROM results WHERE student_id=? AND term=? AND session=?`,
       [studentId, term, session]
     );
@@ -620,45 +622,83 @@ const db = {
   },
 
   async upsertResult(data) {
-    const cls    = db.findClass(data.class);
+    const cls     = db.findClass(data.class);
     const classId = cls?.id ?? null;
-    const subj   = db.subjects.find(s => s.name === data.subject);
+    const subj    = db.subjects.find(s => s.name === data.subject);
     const subjId  = subj?.id ?? null;
 
-    // Clamp scores to their configured maxima (defensive — callers should also clamp)
+    // Clamp scores
     const maxCA   = db.getMaxCA();
     const maxExam = db.getMaxExam();
     const caVal   = Math.min(maxCA,   Math.max(0, parseFloat(data.ca)   || 0));
     const examVal = Math.min(maxExam, Math.max(0, parseFloat(data.exam) || 0));
+    const total   = caVal + examVal;
 
-    // Detect whether the live DB uses "subject_name" or old "subject" column
-    // (cached after first call so we only query INFORMATION_SCHEMA once)
-    if (db._subjectColName === undefined) {
+    // One-time detection of live schema shape (cached on db object)
+    if (!db._schemaChecked) {
       try {
         const cols = await q(
-          `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'results'
-           AND COLUMN_NAME IN ('subject_name','subject')`
+          `SELECT COLUMN_NAME, EXTRA FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'results'`
         );
-        db._subjectColName = cols.find(c => c.COLUMN_NAME === 'subject_name')
-          ? 'subject_name' : 'subject';
-      } catch { db._subjectColName = 'subject_name'; }
-      console.log(`[db] results subject column detected: "${db._subjectColName}"`);
-    }
-    const subCol = db._subjectColName;
+        const colMap = {};
+        cols.forEach(c => { colMap[c.COLUMN_NAME] = (c.EXTRA || '').toLowerCase(); });
 
-    // NOTE: `total` is a GENERATED ALWAYS column (ca + exam) — must NOT be in INSERT/UPDATE
-    await run(
-      `INSERT INTO results
-         (student_id, class_id, arm, subject_id, ${subCol}, term, session, ca, exam)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         ca=VALUES(ca), exam=VALUES(exam)`,
-      [
-        data.studentId, classId, data.arm, subjId, data.subject,
-        data.term, data.session, caVal, examVal,
-      ]
-    );
+        // subject column name
+        db._subjectColName = colMap['subject_name'] !== undefined ? 'subject_name'
+          : colMap['subject']      !== undefined ? 'subject'
+          : 'subject_name'; // fallback
+
+        // is total a generated column?
+        db._totalIsGenerated = colMap['total'] !== undefined &&
+          (colMap['total'].includes('generated') || colMap['total'].includes('virtual') || colMap['total'].includes('stored'));
+
+        // does class_id column exist?
+        db._hasClassId = colMap['class_id'] !== undefined;
+
+        db._schemaChecked = true;
+        console.log(`[db] results schema: subjectCol="${db._subjectColName}" totalGenerated=${db._totalIsGenerated} hasClassId=${db._hasClassId}`);
+      } catch (e) {
+        console.warn('[db] schema check failed, using defaults:', e.message);
+        db._subjectColName   = 'subject_name';
+        db._totalIsGenerated = true;
+        db._hasClassId       = true;
+        db._schemaChecked    = true;
+      }
+    }
+
+    const subCol     = db._subjectColName;
+    const totalIsGen = db._totalIsGenerated;
+    const hasClassId = db._hasClassId;
+
+    // Build INSERT dynamically based on live schema
+    const cols   = ['student_id', subCol, 'term', 'session', 'ca', 'exam'];
+    const vals   = [data.studentId, data.subject, data.term, data.session, caVal, examVal];
+    const update = ['ca=VALUES(ca)', 'exam=VALUES(exam)'];
+
+    if (hasClassId) { cols.splice(1, 0, 'class_id'); vals.splice(1, 0, classId); }
+    if (subCol === 'subject_name') { cols.splice(hasClassId ? 3 : 2, 0, 'subject_id'); vals.splice(hasClassId ? 3 : 2, 0, subjId); }
+    if (!totalIsGen) { cols.push('total'); vals.push(total); update.push('total=VALUES(total)'); }
+    if (!hasClassId) {
+      // old schema had class_name
+      cols.splice(1, 0, 'class_name'); vals.splice(1, 0, data.class || null);
+    }
+    cols.push('arm'); vals.push(data.arm || null);
+
+    const placeholders = cols.map(() => '?').join(', ');
+    const sql = `INSERT INTO results (${cols.join(', ')}) VALUES (${placeholders})
+                 ON DUPLICATE KEY UPDATE ${update.join(', ')}`;
+
+    try {
+      await run(sql, vals);
+    } catch (e) {
+      // If we guessed wrong about schema, reset detection and retry once
+      console.error('[db] upsertResult INSERT failed:', e.message);
+      console.error('[db] SQL was:', sql);
+      console.error('[db] Vals were:', vals);
+      db._schemaChecked = false;
+      throw e;
+    }
 
     const saved = await q1(
       `SELECT * FROM results WHERE student_id=? AND ${subCol}=? AND term=? AND session=?`,
