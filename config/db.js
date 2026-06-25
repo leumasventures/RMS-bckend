@@ -686,7 +686,7 @@ const db = {
         if (bk && typeof bk === 'object' && Object.keys(bk).length) return bk;
       }
     } catch (e) {}
-    return { 'CA 1': 10, 'CA 2': 10, 'Exam': 80 };
+    return { 'CA': 40, 'Exam': 60 };
   },
 
   getMaxCA() {
