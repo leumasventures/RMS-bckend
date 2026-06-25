@@ -324,6 +324,29 @@ const db = {
       active:        u.active === 1 || u.active === true,
     }));
 
+    /* ── Migrate old score_breakdown to CA:40 + Exam:60 if it has the old 3-component format ── */
+    try {
+      const rawBk = db._settings?.score_breakdown;
+      if (rawBk) {
+        const bk = JSON.parse(rawBk);
+        // Old default had 3 keys: 'CA 1', 'CA 2', 'Exam' with values 10,10,80
+        const keys = Object.keys(bk);
+        const isOldDefault = keys.length === 3 &&
+          keys.some(k => /ca\s*1/i.test(k)) &&
+          keys.some(k => /ca\s*2/i.test(k));
+        if (isOldDefault) {
+          const newBk = JSON.stringify({ 'CA': 40, 'Exam': 60 });
+          await run(
+            `INSERT INTO school_settings (setting_key, setting_value) VALUES ('score_breakdown', ?)
+             ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
+            [newBk]
+          );
+          db._settings.score_breakdown = newBk;
+          console.log('[db] Migrated score_breakdown from CA1+CA2+Exam(10+10+80) → CA+Exam(40+60)');
+        }
+      }
+    } catch (e) { console.warn('[db] score_breakdown migration skipped:', e.message); }
+
     /* these are loaded on-demand — start empty */
     db.results           = [];
     db.attendance        = [];

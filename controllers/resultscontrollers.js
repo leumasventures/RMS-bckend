@@ -57,11 +57,9 @@ exports.bulkUpsert = async (req, res) => {
 
         const maxCA   = db.getMaxCA();
         const maxExam = db.getMaxExam();
+        // Clamp each score to its individual max — total will be at most maxCA+maxExam
         const caVal   = Math.min(maxCA,   Math.max(0, parseFloat(item.ca)   || 0));
         const examVal = Math.min(maxExam, Math.max(0, parseFloat(item.exam) || 0));
-        if (caVal + examVal > 100) {
-          errors.push({ item, error: `Total score ${caVal + examVal} exceeds 100` }); continue;
-        }
 
         const record = await db.upsertResult({
           studentId,
@@ -81,10 +79,11 @@ exports.bulkUpsert = async (req, res) => {
     }
 
     res.status(200).json({
-      ok: true,
-      saved: saved.length,
-      errors: errors.length ? errors : undefined,
-      data: saved,
+      ok:      true,
+      saved:   saved.length,
+      skipped: errors.length,
+      errors:  errors.length ? errors : undefined,
+      data:    saved,
     });
   } catch (e) {
     res.status(500).json({ ok: false, message: e.message });
