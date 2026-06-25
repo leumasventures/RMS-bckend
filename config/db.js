@@ -189,6 +189,80 @@ const db = {
       score_b    TINYINT UNSIGNED NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
+
+    /* ── Ensure results table exists with correct schema ───────────────── */
+    await q(`CREATE TABLE IF NOT EXISTS results (
+      id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      student_id   VARCHAR(30)  NOT NULL,
+      class_id     INT UNSIGNED DEFAULT NULL,
+      arm          VARCHAR(10),
+      subject_id   INT UNSIGNED DEFAULT NULL,
+      subject_name VARCHAR(80)  NOT NULL,
+      term         VARCHAR(30)  NOT NULL,
+      session      VARCHAR(20)  NOT NULL,
+      ca           TINYINT UNSIGNED DEFAULT 0,
+      exam         TINYINT UNSIGNED DEFAULT 0,
+      total        TINYINT UNSIGNED GENERATED ALWAYS AS (ca + exam) STORED,
+      created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY   uniq_result (student_id, subject_name, term, session)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
+
+    /* ── Migrate results table if it was created from old schema_fixed.js ─
+       Old schema used "subject" and "class_name" instead of
+       "subject_name" and "class_id". Detect and rename if needed.        */
+    try {
+      const resCols = await q(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'results'`
+      );
+      const resColSet = new Set(resCols.map(r => r.COLUMN_NAME));
+
+      // Rename "subject" → "subject_name" (old schema used "subject")
+      if (resColSet.has('subject') && !resColSet.has('subject_name')) {
+        await q(`ALTER TABLE results CHANGE COLUMN \`subject\` subject_name VARCHAR(80) NOT NULL`)
+          .catch(e => console.warn('[db] rename subject→subject_name:', e.message));
+        console.log('[db] Migrated results.subject → results.subject_name');
+      }
+
+      // Add subject_name if missing entirely
+      if (!resColSet.has('subject_name') && !resColSet.has('subject')) {
+        await q(`ALTER TABLE results ADD COLUMN subject_name VARCHAR(80) NOT NULL DEFAULT '' AFTER arm`)
+          .catch(e => console.warn('[db] add subject_name:', e.message));
+      }
+
+      // Replace "class_name" with "class_id" (old schema used class_name VARCHAR)
+      if (resColSet.has('class_name') && !resColSet.has('class_id')) {
+        await q(`ALTER TABLE results ADD COLUMN class_id INT UNSIGNED DEFAULT NULL AFTER student_id`)
+          .catch(e => console.warn('[db] add class_id to results:', e.message));
+        // Drop class_name (data in it is not useful — class_id is resolved at INSERT time)
+        await q(`ALTER TABLE results DROP COLUMN class_name`)
+          .catch(e => console.warn('[db] drop class_name from results:', e.message));
+        console.log('[db] Migrated results.class_name → results.class_id');
+      }
+
+      // Add subject_id if missing
+      if (!resColSet.has('subject_id')) {
+        await q(`ALTER TABLE results ADD COLUMN subject_id INT UNSIGNED DEFAULT NULL AFTER class_id`)
+          .catch(e => console.warn('[db] add subject_id:', e.message));
+      }
+
+      // Fix UNIQUE KEY if it still references old "subject" column name
+      // (MySQL won't let you rename a column that's part of a UNIQUE KEY without recreating it)
+      const uks = await q(
+        `SELECT INDEX_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.STATISTICS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'results'
+         AND INDEX_NAME = 'uniq_result'`
+      ).catch(() => []);
+      const ukCols = uks.map(r => r.COLUMN_NAME);
+      if (ukCols.includes('subject') || (!ukCols.includes('subject_name') && ukCols.length)) {
+        await q(`ALTER TABLE results DROP INDEX uniq_result`).catch(() => {});
+        await q(`ALTER TABLE results ADD UNIQUE KEY uniq_result (student_id, subject_name, term, session)`)
+          .catch(e => console.warn('[db] recreate uniq_result:', e.message));
+        console.log('[db] Recreated uniq_result index on subject_name');
+      }
+    } catch (e) { console.warn('[db] results migration check failed:', e.message); }
+
     const [
       classRows, armRows, studentRows, staffRows,
       subjectRows, feeStructRows, settingsRows, userRows,
@@ -557,10 +631,26 @@ const db = {
     const caVal   = Math.min(maxCA,   Math.max(0, parseFloat(data.ca)   || 0));
     const examVal = Math.min(maxExam, Math.max(0, parseFloat(data.exam) || 0));
 
+    // Detect whether the live DB uses "subject_name" or old "subject" column
+    // (cached after first call so we only query INFORMATION_SCHEMA once)
+    if (db._subjectColName === undefined) {
+      try {
+        const cols = await q(
+          `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'results'
+           AND COLUMN_NAME IN ('subject_name','subject')`
+        );
+        db._subjectColName = cols.find(c => c.COLUMN_NAME === 'subject_name')
+          ? 'subject_name' : 'subject';
+      } catch { db._subjectColName = 'subject_name'; }
+      console.log(`[db] results subject column detected: "${db._subjectColName}"`);
+    }
+    const subCol = db._subjectColName;
+
     // NOTE: `total` is a GENERATED ALWAYS column (ca + exam) — must NOT be in INSERT/UPDATE
     await run(
       `INSERT INTO results
-         (student_id, class_id, arm, subject_id, subject_name, term, session, ca, exam)
+         (student_id, class_id, arm, subject_id, ${subCol}, term, session, ca, exam)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          ca=VALUES(ca), exam=VALUES(exam)`,
@@ -571,7 +661,7 @@ const db = {
     );
 
     const saved = await q1(
-      'SELECT * FROM results WHERE student_id=? AND subject_name=? AND term=? AND session=?',
+      `SELECT * FROM results WHERE student_id=? AND ${subCol}=? AND term=? AND session=?`,
       [data.studentId, data.subject, data.term, data.session]
     );
 
