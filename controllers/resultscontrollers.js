@@ -46,18 +46,18 @@ exports.bulkUpsert = async (req, res) => {
     if (!Array.isArray(results) || !results.length)
       return res.status(400).json({ ok: false, message: 'results array is required.' });
 
+    console.log(`[bulkUpsert] received ${results.length} items. First item:`, JSON.stringify(results[0]));
+
     const saved = [];
     const errors = [];
 
     for (const item of results) {
       try {
-        // Accept both camelCase (studentId) and snake_case (student_id)
         const studentId = item.studentId || item.student_id;
         if (!studentId) { errors.push({ item, error: 'missing studentId' }); continue; }
 
         const maxCA   = db.getMaxCA();
         const maxExam = db.getMaxExam();
-        // Clamp each score to its individual max — total will be at most maxCA+maxExam
         const caVal   = Math.min(maxCA,   Math.max(0, parseFloat(item.ca)   || 0));
         const examVal = Math.min(maxExam, Math.max(0, parseFloat(item.exam) || 0));
 
@@ -74,9 +74,13 @@ exports.bulkUpsert = async (req, res) => {
         });
         saved.push(record);
       } catch (e) {
+        console.error(`[bulkUpsert] ITEM FAILED — studentId:${item.studentId||item.student_id} subject:${item.subject} error:`, e.message);
         errors.push({ item, error: e.message });
       }
     }
+
+    console.log(`[bulkUpsert] done: saved=${saved.length} errors=${errors.length}`);
+    if (errors.length) console.error('[bulkUpsert] first error:', errors[0]);
 
     res.status(200).json({
       ok:      true,
@@ -86,6 +90,7 @@ exports.bulkUpsert = async (req, res) => {
       data:    saved,
     });
   } catch (e) {
+    console.error('[bulkUpsert] OUTER ERROR:', e.message, e.stack);
     res.status(500).json({ ok: false, message: e.message });
   }
 };

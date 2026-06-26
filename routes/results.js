@@ -21,15 +21,19 @@ router.get('/remarks/:studentId',     parentAuth, requireOwnStudent, rc.getRemar
 // POST /api/results/allocations/class?class=JSS%201&arm=A
 router.get('/allocations/class',    ...scoped, rc2.getClassAllocation);
 router.post('/allocations/class',   ...scoped, rc2.setClassAllocation);
+router.put('/allocations/class',    ...scoped, rc2.setClassAllocation);   // api.js uses PUT
 router.delete('/allocations/class', authenticate, adminOnly, rc2.clearClassAllocation);
 // Keep path-param aliases for backward compat
 router.get('/allocations/class/:cls/:arm',    ...scoped, rc2.getClassAllocation);
 router.post('/allocations/class/:cls/:arm',   ...scoped, rc2.setClassAllocation);
+router.put('/allocations/class/:cls/:arm',    ...scoped, rc2.setClassAllocation);
 router.delete('/allocations/class/:cls/:arm', authenticate, adminOnly, rc2.clearClassAllocation);
 
 router.get('/allocations/student/:studentId',   ...scoped, rc2.getStudentAllocation);
 router.post('/allocations/student/:studentId',  ...scoped, rc2.setStudentAllocation);
+router.put('/allocations/student/:studentId',   ...scoped, rc2.setStudentAllocation);  // api.js uses PUT
 router.post('/allocations/student/bulk',        ...scoped, rc2.bulkSetStudentAllocations);
+router.post('/allocations/bulk-student',        ...scoped, rc2.bulkSetStudentAllocations); // api.js alias
 
 /* ── collection + class views ────────────────────────────────────────── */
 router.get('/',              ...scoped, rc2.getAll);
