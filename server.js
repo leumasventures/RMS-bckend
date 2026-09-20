@@ -82,14 +82,9 @@ app.use('/api/users',           require('./routes/users'));
 app.use('/api/timetable',       require('./routes/timetable'));
 app.use('/api/archive',         require('./routes/archive'));
 
-<<<<<<< HEAD
 // transcript
 const transcriptRoutes = require('./routes/transcript.routes');
 app.use('/api/transcript', transcriptRoutes);
-
-
-=======
->>>>>>> 74200d2ace275fd9da8f5987b8a6cad02ef97e92
 /* ── 404 handler ── */
 app.use((_req, res) => res.status(404).json({ message: 'Route not found.' }));
 
